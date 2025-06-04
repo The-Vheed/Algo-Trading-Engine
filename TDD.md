@@ -1,4 +1,5 @@
 # EUR/USD Grand Strategy Trading System - Enhanced with Backtesting
+[Detailed Plan from Gemini](https://g.co/gemini/share/36a31595cae5)
 
 ## 1. Enhanced System Architecture
 
