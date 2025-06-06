@@ -1,0 +1,16 @@
+strategy:
+  name: "Risk Management"
+  version: "1.0"
+
+position_sizing:
+  method: "FIXED_FRACTIONAL"
+  risk_per_trade_percent: 1.0
+  max_sl_pips: 70
+
+account_protection:
+  daily_loss_limit_percent: 3.0
+  weekly_loss_limit_percent: 8.0
+  max_concurrent_positions: 3
+
+correlation_limits:
+  max_correlation_exposure: 0.7

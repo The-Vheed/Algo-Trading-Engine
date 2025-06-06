@@ -1,0 +1,5 @@
+api_token: "your_api_token_here"
+app_id: "your_app_id_here"
+base_url: "https://api.deriv.com"
+timeout: 30
+retries: 3
