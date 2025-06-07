@@ -1,0 +1,36 @@
+import logging
+
+
+class Logger:
+    def __init__(self, name: str):
+        self.logger = logging.getLogger(name)
+        stream_handler = logging.StreamHandler()
+        file_handler = logging.FileHandler(f"{name}.log")
+
+        self.logger.setLevel(logging.DEBUG)
+        stream_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.DEBUG)
+
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        stream_handler.setFormatter(formatter)
+        file_handler.setFormatter(formatter)
+
+        self.logger.addHandler(stream_handler)
+        self.logger.addHandler(file_handler)
+
+    def debug(self, message: str):
+        self.logger.debug(message)
+
+    def info(self, message: str):
+        self.logger.info(message)
+
+    def warning(self, message: str):
+        self.logger.warning(message)
+
+    def error(self, message: str):
+        self.logger.error(message)
+
+    def critical(self, message: str):
+        self.logger.critical(message)
