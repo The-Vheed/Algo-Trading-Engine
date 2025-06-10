@@ -1,14 +1,15 @@
-import logging
+import logging, os
 
 
 class Logger:
     def __init__(self, name: str):
         self.logger = logging.getLogger(name)
         stream_handler = logging.StreamHandler()
-        file_handler = logging.FileHandler(f"{name}.log")
+        os.makedirs("logs", exist_ok=True)  # Ensure logs directory exists
+        file_handler = logging.FileHandler(f"logs/{name}.log")
 
         self.logger.setLevel(logging.DEBUG)
-        stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setLevel(logging.INFO)
         file_handler.setLevel(logging.DEBUG)
 
         formatter = logging.Formatter(

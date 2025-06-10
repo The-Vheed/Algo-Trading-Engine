@@ -193,142 +193,203 @@ class DataProvider:
     def __stream_csv_data(self) -> Generator[Dict[str, pd.DataFrame], None, None]:
         """
         Streams historical data from loaded CSVs.
-        Yields dataframes for each timeframe, with lengths equal to their respective counts.
+        Yields dataframes for each timeframe, with lengths equal to their respective counts,
+        ensuring the end-timestamps are synchronized as much as possible.
+        No data is yielded until all timeframes have at least their `count` number of records.
         """
         if not self.data_store:
             logger.error("No CSV data available to stream.")
             return
 
-        # Ensure timeframes are sorted from lowest to highest for consistent streaming
-        # Assuming H1 < H4 < D1 etc. based on integer prefixes or standard durations
         sorted_timeframes = sorted(
             self.timeframes, key=lambda tf: self.__get_timeframe_interval(tf)
         )
+        if not sorted_timeframes:
+            logger.warning("No timeframes specified for streaming.")
+            return
 
-        # Initialize pointers for each timeframe
-        # Store index positions for each timeframe to track what has been yielded
-        timeframe_indices = {tf: 0 for tf in sorted_timeframes}
+        master_step_interval = self.__get_timeframe_interval(sorted_timeframes[0])
 
-        # Find the earliest start time among all loaded dataframes
-        earliest_start_time = min(df.index.min() for df in self.data_store.values())
-        current_global_time = earliest_start_time
+        earliest_overall_data_start = min(
+            df.index.min() for df in self.data_store.values()
+        )
+        latest_overall_data_end = max(df.index.max() for df in self.data_store.values())
 
-        # To ensure we yield based on the lowest common time,
-        # we advance each timeframe's pointer until its data is at or past current_global_time
-        for tf in sorted_timeframes:
-            df = self.data_store[tf]
-            idx_pos = df.index.searchsorted(current_global_time, side="left")
-            timeframe_indices[tf] = idx_pos
-            if idx_pos >= len(df):
-                logger.warning(
-                    f"Timeframe {tf} has no data at or after global start time {current_global_time}. It might be skipped."
+        current_master_time = earliest_overall_data_start
+        logger.info(
+            f"CSV Stream initialized. Master clock starting from: {current_master_time}. "
+            f"Will advance by {master_step_interval}."
+        )
+
+        # --- Warm-up / Initial Data Collection Phase ---
+        # Advance the master clock until all timeframes can provide full 'counts' data
+        initial_yield_achieved = False
+        # warmup_start_time = datetime.now()
+
+        while (
+            not initial_yield_achieved
+            and current_master_time <= latest_overall_data_end
+        ):
+            all_timeframes_ready = True
+            temp_data_for_check = {}
+
+            for tf in sorted_timeframes:
+                df = self.data_store[tf]
+                required_count = self.counts[tf]
+
+                end_idx_pos = df.index.searchsorted(current_master_time, side="right")
+
+                # Check if enough data exists for this timeframe to meet the count
+                # This ensures we have at least 'required_count' points ending at end_idx_pos
+                if end_idx_pos < required_count:
+                    all_timeframes_ready = False
+                    logger.debug(
+                        f"Warm-up: {tf} has only {end_idx_pos} records, needs {required_count}. "
+                        f"Not yet ready. Current master time: {current_master_time}"
+                    )
+                    break  # Break inner loop, as one TF isn't ready
+
+                # If ready, slice the data to form the current view
+                start_idx_pos = max(0, end_idx_pos - required_count)
+                sliced_df = df.iloc[start_idx_pos:end_idx_pos].copy()
+
+                if sliced_df.empty or sliced_df.index.max() > current_master_time:
+                    # This could happen if the master time is ahead of data or data is sparse
+                    all_timeframes_ready = False
+                    logger.debug(
+                        f"Warm-up: {tf} sliced data is empty or too new for {current_master_time}. Not ready."
+                    )
+                    break  # Break inner loop, as this TF isn't providing valid data yet
+
+                temp_data_for_check[tf] = (
+                    sliced_df  # Store for the potential first yield
                 )
 
-        while True:
-            yielded_data_this_round = {}
-            all_timeframes_exhausted = True
-
-            # Find the next global timestamp to process based on the smallest next timestamp
-            # available across all timeframes that still have data.
-            next_available_times = []
-            for tf in sorted_timeframes:
-                df = self.data_store[tf]
-                current_idx = timeframe_indices[tf]
-                if current_idx < len(df):
-                    next_available_times.append(df.index[current_idx])
-
-            if not next_available_times:
-                logger.info("All CSV data exhausted across all timeframes.")
-                break  # All data has been streamed
-
-            current_global_time = min(next_available_times)
-            logger.debug(f"CSV Stream Clock: {current_global_time}")
-
-            # For each timeframe, get the data ending at current_global_time and of 'count' length
-            for tf in sorted_timeframes:
-                df = self.data_store[tf]
-                current_idx = timeframe_indices[tf]
-
-                # Check if this timeframe has data at or past the current_global_time
-                # and if we haven't exhausted this timeframe's data
-                if (
-                    current_idx < len(df)
-                    and df.index[current_idx] <= current_global_time
-                ):
-                    end_idx = df.index.searchsorted(current_global_time, side="right")
-                    if end_idx > 0:
-                        start_idx = max(0, end_idx - self.counts[tf])
-                        # Slice the DataFrame
-                        chunk = df.iloc[start_idx:end_idx].copy()
-
-                        if not chunk.empty:
-                            yielded_data_this_round[tf] = chunk
-                            logger.debug(
-                                f"Prepared {len(chunk)} records for {tf} ending at {chunk.index.max()}"
-                            )
-                            all_timeframes_exhausted = False
-                        else:
-                            logger.debug(
-                                f"No new data for {tf} ending at {current_global_time}. Current index: {current_idx}"
-                            )
-                    else:
-                        logger.debug(
-                            f"No data points <= {current_global_time} for {tf}."
-                        )
-
-                    # Advance the pointer for this timeframe
-                    # We advance by one step to move to the next candle in this timeframe
-                    timeframe_indices[tf] = end_idx
-
-            if yielded_data_this_round:
-                yield yielded_data_this_round
+            if all_timeframes_ready:
+                # All timeframes are now ready to provide data of required count
+                yield temp_data_for_check
                 logger.info(
-                    f"Yielded data for {current_global_time}. Next fetch for CSV at {current_global_time + timedelta(seconds=1)}"
-                )  # Increment clock slightly
+                    f"Initial CSV data yielded at {current_master_time} after warm-up."
+                )
+                initial_yield_achieved = True
+            else:
+                # Not all timeframes are ready, advance the master clock and try again
+                current_master_time += master_step_interval
+
+            # Add a safety break for very long warm-up phases, though typically not needed
+            if current_master_time > latest_overall_data_end:
+                logger.error(
+                    "Warm-up failed: Reached end of data without all timeframes meeting 'count' requirements."
+                )
+                break
+
+        if not initial_yield_achieved:
+            logger.critical(
+                "CSV stream could not find a starting point where all timeframes met their 'count' requirements. Stream will not yield any data."
+            )
+            return  # Exit if warm-up failed
+
+        # --- Main Streaming Loop (continues from where warm-up left off) ---
+        while current_master_time <= latest_overall_data_end:
+            yielded_data_this_round = {}
+            at_least_one_tf_updated = False
+
+            for tf in sorted_timeframes:
+                df = self.data_store[tf]
+                required_count = self.counts[tf]
+
+                end_idx_pos = df.index.searchsorted(current_master_time, side="right")
+
+                # If there isn't enough data from this point backwards, we simply don't include it in this yield
+                if end_idx_pos < required_count:
+                    logger.debug(
+                        f"{tf} does not have enough records ({end_idx_pos}) to meet count ({required_count}) at {current_master_time}. Skipping for this yield."
+                    )
+                    continue  # Skip this timeframe for the current yield, but don't stop the whole stream
+
+                start_idx_pos = max(0, end_idx_pos - required_count)
+                sliced_df = df.iloc[start_idx_pos:end_idx_pos].copy()
+
+                if not sliced_df.empty and sliced_df.index.max() <= current_master_time:
+                    yielded_data_this_round[tf] = sliced_df
+                    at_least_one_tf_updated = True
+                    logger.debug(
+                        f"Prepared {len(sliced_df)} records for {tf} ending at {sliced_df.index.max()}. (Target: {current_master_time})"
+                    )
+                else:
+                    logger.debug(
+                        f"No valid data slice for {tf} at {current_master_time}. Empty: {sliced_df.empty}, Max Time: {sliced_df.index.max() if not sliced_df.empty else 'N/A'}"
+                    )
+
+            if (
+                yielded_data_this_round
+            ):  # Only yield if data was prepared for at least one timeframe
+                yield yielded_data_this_round
+                logger.info(f"Yielded CSV data ending at {current_master_time}")
             else:
                 logger.debug(
-                    f"No new data to yield for any timeframe at {current_global_time}. Advancing stream time."
+                    f"No new data to yield for any timeframe at {current_master_time}. Advancing master clock."
                 )
-                # If no data was yielded, we still need to advance the overall stream time
-                # This could happen if some timeframes are exhausted or have gaps.
-                # The next iteration will find the next available time.
 
-            if all_timeframes_exhausted:
-                logger.info("All timeframes exhausted in CSV stream.")
-                break
+            # Advance the master clock for the next iteration
+            current_master_time += master_step_interval
+
+        logger.info(
+            "CSV data stream finished: Reached end of available historical data."
+        )
 
     def __stream_live_data(self) -> Generator[Dict[str, pd.DataFrame], None, None]:
         """
-        Streams live data by querying the API.
-        Yields dataframes for each timeframe, with lengths equal to their respective counts.
-        It intelligently polls for new data based on timeframe frequency.
+        Streams live data by querying the API, optimized with a master clock
+        and intelligent polling based on timeframe frequencies.
+        Yields dataframes for each timeframe, with lengths equal to their respective counts,
+        ensuring the end-timestamps are synchronized as much as possible, driven by
+        the master clock.
         """
-        logger.info("Starting live data stream...")
+        logger.info("Starting live data stream with master clock...")
 
-        # Perform initial fetch for all timeframes
+        # --- Initial Data Fetch Phase ---
         initial_fetch_successful = False
-        start_time = time.time()
-        while time.time() - start_time < self.initial_fetch_timeout:
+        fetch_start_time = time.time()
+
+        while time.time() - fetch_start_time < self.initial_fetch_timeout:
             try:
                 initial_data = self.__fetch_data_from_api(
                     self.symbol, self.timeframes, self.counts
                 )
-                for tf, df in initial_data.items():
-                    if not df.empty:
+
+                all_initial_data_ready = True
+                for tf in self.timeframes:
+                    df = initial_data.get(tf)
+                    if df is None or df.empty or len(df) < self.counts[tf]:
+                        logger.warning(
+                            f"Initial fetch for {tf} is incomplete or empty. "
+                            f"Got {len(df) if df is not None else 0} records, "
+                            f"needed {self.counts[tf]}."
+                        )
+                        all_initial_data_ready = False
+                        break
+
+                if all_initial_data_ready:
+                    for tf, df in initial_data.items():
                         self.data_store[tf] = df
                         self.last_fetched_time[tf] = df.index.max()
-                        self.next_fetch_time[
-                            tf
-                        ] = datetime.now() + self.__get_timeframe_interval(
-                            tf
-                        )  # Set next fetch based on TF
-                    else:
-                        logger.warning(
-                            f"Initial fetch for {tf} returned empty DataFrame."
+                        # Set next fetch time based on when the bar *should* close
+                        self.next_fetch_time[tf] = (
+                            df.index.max() + self.__get_timeframe_interval(tf)
                         )
-                initial_fetch_successful = True
-                logger.info("Initial live data fetch complete.")
-                break
+                        logger.info(
+                            f"Initialized {tf} data ending at {self.last_fetched_time[tf]}"
+                        )
+                    initial_fetch_successful = True
+                    logger.info("All initial live data fetches complete.")
+                    break
+                else:
+                    logger.warning(
+                        "Not all timeframes ready after initial fetch. Retrying..."
+                    )
+                    time.sleep(self.live_polling_interval)
+
             except Exception as e:
                 logger.warning(
                     f"Initial live data fetch failed: {e}. Retrying in {self.live_polling_interval}s..."
@@ -337,79 +398,112 @@ class DataProvider:
 
         if not initial_fetch_successful:
             raise RuntimeError(
-                "Failed to fetch initial live data after multiple retries."
+                "Failed to fetch initial live data for all timeframes after multiple retries."
             )
 
-        yield self.data_store.copy()  # Yield initial data
+        # Yield the initially fetched data snapshot
+        yield self.data_store.copy()
+        logger.info("Initial live data snapshot yielded.")
 
+        # Determine the smallest interval for the master clock step
+        if not self.timeframes:
+            logger.warning("No timeframes specified for streaming.")
+            return
+
+        sorted_timeframes = sorted(
+            self.timeframes, key=lambda tf: self.__get_timeframe_interval(tf)
+        )
+        master_step_interval = self.__get_timeframe_interval(sorted_timeframes[0])
+        logger.info(f"Master clock will advance by {master_step_interval}.")
+
+        # Initialize master clock to just after the latest fetched data point's "close time"
+        # or the next expected bar close for the fastest timeframe, aligned to its interval.
+        # We round current time down to the nearest master_step_interval boundary, then add one interval.
+        current_system_time_aligned = datetime.now().replace(microsecond=0)
+        if master_step_interval == timedelta(minutes=1):
+            current_system_time_aligned = current_system_time_aligned.replace(second=0)
+        elif master_step_interval == timedelta(minutes=5):
+            current_system_time_aligned = current_system_time_aligned.replace(second=0)
+            current_system_time_aligned -= timedelta(
+                minutes=current_system_time_aligned.minute % 5
+            )
+        else:  # master_step_interval == timedelta(hours=1):
+            current_system_time_aligned = current_system_time_aligned.replace(
+                minute=0, second=0
+            )
+
+        # Ensure master_clock starts at the next expected tick *after* all initial data.
+        latest_initial_data_end = max(self.last_fetched_time.values())
+        current_master_time = (
+            max(current_system_time_aligned, latest_initial_data_end)
+            + master_step_interval
+        )
+
+        logger.info(f"Master clock initialized to: {current_master_time}.")
+
+        # --- Main Streaming Loop (Live Data) ---
         while True:
-            yielded_data_this_round = {}
-            current_time = datetime.now()
+            current_system_time = datetime.now()  # Actual system time for polling logic
 
-            # Iterate through timeframes, prioritizing lower ones
-            sorted_timeframes = sorted(
-                self.timeframes, key=lambda tf: self.__get_timeframe_interval(tf)
-            )
+            # Advance master clock if the real system time has passed the current master clock's expected tick
+            if current_system_time >= current_master_time:
+                # Move master clock to the next full interval
+                current_master_time = current_master_time + master_step_interval
+                logger.debug(f"Master clock advanced to {current_master_time}.")
+
+            yielded_data_this_round = {}
 
             for tf in sorted_timeframes:
                 interval = self.__get_timeframe_interval(tf)
+                required_count = self.counts[tf]
 
-                # Check if it's time to fetch data for this timeframe
-                if current_time >= self.next_fetch_time[tf]:
+                # Only attempt to fetch if the current master clock has reached or passed
+                # the next expected fetch time for this specific timeframe.
+                if current_master_time >= self.next_fetch_time[tf]:
                     logger.debug(
-                        f"Attempting to fetch new data for {tf} at {current_time}. Last fetched: {self.last_fetched_time.get(tf)}"
+                        f"Fetching for {tf} as master clock {current_master_time} "
+                        f"is >= next_fetch_time {self.next_fetch_time[tf]}."
                     )
                     try:
-                        # Fetch the latest data for this specific timeframe
-                        # The API call should ideally support getting 'N' latest candles
+                        # Fetch the latest 'count' bars for this timeframe.
+                        # API should ideally provide *closed* bars.
                         new_data = self.__fetch_data_from_api_for_timeframe(
-                            self.symbol, tf, self.counts[tf]
+                            self.symbol, tf, required_count
                         )
 
                         if not new_data.empty:
+                            new_data_max_time = new_data.index.max()
                             last_fetched_dt = self.last_fetched_time.get(tf)
+
+                            # If new data is genuinely newer or it's the first data
                             if (
                                 last_fetched_dt is None
-                                or new_data.index.max() > last_fetched_dt
+                                or new_data_max_time > last_fetched_dt
                             ):
-                                # New data found: append or update
                                 logger.info(
-                                    f"New data found for {tf}. Last candle: {new_data.index.max()}"
+                                    f"New data for {tf}. Latest bar ends at: {new_data_max_time}"
                                 )
 
-                                # Only append if we have existing data and indices align
+                                # Concatenate new data, handle potential overlaps, and trim to count
                                 if (
                                     tf in self.data_store
                                     and not self.data_store[tf].empty
-                                    and new_data.index.min()
-                                    > self.data_store[tf].index.max()
                                 ):
-                                    self.data_store[tf] = pd.concat(
-                                        [self.data_store[tf], new_data],
-                                        ignore_index=False,
+                                    combined_df = pd.concat(
+                                        [self.data_store[tf], new_data]
                                     )
-                                    # Trim to maintain 'count' length if needed, or manage rolling window
-                                    self.data_store[tf] = self.data_store[tf].iloc[
-                                        -self.counts[tf] :
+                                    # Drop duplicates based on index (timestamps), keeping the latest
+                                    combined_df = combined_df[
+                                        ~combined_df.index.duplicated(keep="last")
                                     ]
-                                elif (
-                                    tf in self.data_store
-                                    and not self.data_store[tf].empty
-                                    and new_data.index.min()
-                                    <= self.data_store[tf].index.max()
-                                ):
-                                    # If new data overlaps or is older, we might need to merge or simply replace
-                                    # For simplicity, if overlap, we'll assume the API returns the most up-to-date 'count'
-                                    # For a robust solution, you'd need a more sophisticated merge/update logic here
-                                    # based on how your API provides historical data.
-                                    logger.warning(
-                                        f"Fetched data for {tf} overlaps with existing data. Replacing with new fetch for simplicity."
-                                    )
-                                    self.data_store[tf] = new_data
+                                    self.data_store[tf] = combined_df.iloc[
+                                        -required_count:
+                                    ]
                                 else:
-                                    self.data_store[tf] = (
-                                        new_data  # First data or full replacement
-                                    )
+                                    # No existing data or empty, just store the new data (trimmed)
+                                    self.data_store[tf] = new_data.iloc[
+                                        -required_count:
+                                    ]
 
                                 self.validate_data(self.data_store[tf], tf)
                                 self.last_fetched_time[tf] = self.data_store[
@@ -417,11 +511,12 @@ class DataProvider:
                                 ].index.max()
                                 yielded_data_this_round[tf] = self.data_store[
                                     tf
-                                ].copy()  # Yield the current view
+                                ].copy()  # Mark for yielding
 
                             else:
                                 logger.debug(
-                                    f"No newer data for {tf}. Last candle: {new_data.index.max()}. Existing max: {last_fetched_dt}"
+                                    f"No newer data from API for {tf}. "
+                                    f"Latest: {new_data_max_time}. Existing: {last_fetched_dt}"
                                 )
                         else:
                             logger.debug(
@@ -431,32 +526,43 @@ class DataProvider:
                     except Exception as e:
                         logger.error(f"Error fetching live data for {tf}: {e}")
 
-                    # Always update next fetch time after attempting to fetch,
-                    # whether new data was found or not, to prevent continuous hammering.
-                    self.next_fetch_time[tf] = current_time + interval
+                    # IMPORTANT: Always update next_fetch_time for this TF *after* the attempt,
+                    # to prevent immediate re-fetching. It's set for the next time its interval passes
+                    # the current master clock.
+                    self.next_fetch_time[tf] = current_master_time + interval
+                else:
+                    logger.debug(
+                        f"Not yet time to fetch for {tf}. Master clock {current_master_time} "
+                        f"is < next_fetch_time {self.next_fetch_time[tf]}."
+                    )
 
             if yielded_data_this_round:
                 logger.info(
-                    f"Yielded live data for {len(yielded_data_this_round)} timeframes."
+                    f"Yielded live data snapshot (containing updates for {len(yielded_data_this_round)} TFs) "
+                    f"at master time {current_master_time}."
                 )
                 yield self.data_store.copy()  # Yield a copy of the entire current data_store
             else:
-                logger.debug("No new live data to yield this round.")
+                logger.debug(
+                    f"No new data ready to yield at master time {current_master_time}."
+                )
 
-            # Sleep for the shortest interval or a polling interval to prevent busy-waiting
-            # Sleep until the earliest next fetch time among all timeframes, or minimum polling interval
-            sleep_duration = self.live_polling_interval
-            if self.next_fetch_time:
-                earliest_next_fetch = min(self.next_fetch_time.values())
-                time_until_next_fetch = (
-                    earliest_next_fetch - datetime.now()
-                ).total_seconds()
-                if time_until_next_fetch > 0:
-                    sleep_duration = min(sleep_duration, time_until_next_fetch)
+            # Calculate optimal sleep duration until the next event (master clock tick or TF fetch time)
+            next_event_times = list(self.next_fetch_time.values()) + [
+                current_master_time + master_step_interval
+            ]
+            time_until_next_event_s = (
+                min(next_event_times) - datetime.now()
+            ).total_seconds()
 
-            if sleep_duration > 0:
-                logger.debug(f"Sleeping for {sleep_duration:.2f} seconds...")
-                time.sleep(sleep_duration)
+            # Ensure sleep duration is non-negative and respects minimum polling interval
+            sleep_duration = max(self.live_polling_interval, time_until_next_event_s)
+            sleep_duration = max(
+                0.01, sleep_duration
+            )  # Minimum sleep to prevent busy-waiting
+
+            logger.debug(f"Sleeping for {sleep_duration:.2f} seconds...")
+            time.sleep(sleep_duration)
 
     # --- Placeholder for actual API integration ---
     def __fetch_data_from_api(

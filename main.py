@@ -24,17 +24,44 @@ def main():
     risk_config = ConfigManager.load_config("config/risk_config.yaml")
     strategy_config = ConfigManager.load_config("config/strategy_config.yaml")
 
-    # # Initialize components
-    data_provider = DataProvider()
-
     if strategy_config["backtesting"]["enabled"]:
         logger.info("Backtesting. Loading historical data...")
-        data = data_provider.load_csv_data("data/historical", "EURUSD", ["H1", "H4"])
-        logger.debug(data["H1"].head())
+        try:
+            csv_provider = DataProvider(
+                source_type="csv",
+                base_path="data/historical",
+                symbol="EURUSD",
+                timeframes=["H1", "H4"],
+                counts=[3, 3],
+            )
+
+            csv_stream = csv_provider.stream_data()
+            for i, data_dict in enumerate(csv_stream):
+                logger.debug(f"CSV Stream - Iteration {i+1}:")
+                for tf, df in data_dict.items():
+                    logger.debug(
+                        f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
+                        + str(df.tail(1))
+                    )
+                    # Assert length is correct for csv data as well
+                    assert (
+                        len(df) == csv_provider.counts[tf]
+                    ), f"CSV yielded {tf} data has length {len(df)}, expected {csv_provider.counts[tf]}"
+
+                if i >= 5:
+                    logger.debug(
+                        "Stopping csv stream after 5 iterations for demonstration."
+                    )
+                    break
+
+        except Exception as e:
+            logger.error(f"Error during csv data stream: {e}")
+            import traceback
+
+            traceback.print_exc()
     else:
         logger.info("Live Trading. Loading live data...")
-        data = data_provider.load_live_data("data/historical", "EURUSD", ["H1", "H4"])
-        logger.debug(data["H1"].head())
+        # data = data_provider.load_live_data("data/historical", "EURUSD", ["H1", "H4"])
 
     # indicator_engine = IndicatorEngine()
     # regime_detector = RegimeDetector()
