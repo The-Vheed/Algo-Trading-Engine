@@ -5,11 +5,14 @@ logger = Logger(__name__)
 import os
 import random
 import time
+import asyncio
 import pandas as pd
 from pandas import DataFrame
-from typing import List, Dict, Union, Generator, Tuple
+from typing import List, Dict, Union, AsyncGenerator, Generator, Tuple, Optional
 from pandas import DataFrame, Series, concat
 from datetime import datetime, timedelta
+
+from deriv_api import DerivAPI
 
 
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
@@ -29,13 +32,12 @@ class DataProvider:
         timeframes: List[str] = ["H1", "H4"],
         counts: List[int] = [1250, 500],
         api_key: str = "",
-        app_id: str = "",
+        app_id: int = 1089,  # Default to 1089 for testing if not provided
         base_path: str = "",
-        base_url: str = "https://api.deriv.com",
         timeout: int = 30,
         retries: int = 3,
-        initial_fetch_timeout: int = 60,  # New: Max time to wait for initial live data
-        live_polling_interval: int = 5,  # New: How often to poll for new live data (seconds)
+        initial_fetch_timeout: int = 60,  # Max time to wait for initial live data
+        live_polling_interval: int = 10,  # How often to poll for new live data (seconds)
     ) -> None:
         """
         Initializes the DataProvider.
@@ -45,11 +47,10 @@ class DataProvider:
             symbol (str): The trading symbol (e.g., "EURUSD").
             timeframes (List[str]): List of timeframes to load/stream (e.g., ["H1", "H4"]).
             counts (List[int]): List of historical data counts corresponding to timeframes.
-                                  e.g., [1250, 500] for ["H1", "H4"].
+                                e.g., [1250, 500] for ["H1", "H4"].
             api_key (str): API key for live data access.
-            app_id (str): Application ID for live data access.
+            app_id (int): Application ID for live data access. Defaults to 1089.
             base_path (str): Base path for CSV files (required for 'csv' source_type).
-            base_url (str): Base URL for the live API.
             timeout (int): API request timeout in seconds.
             retries (int): Number of retries for API requests.
             initial_fetch_timeout (int): Max time to wait for initial live data in seconds.
@@ -67,13 +68,15 @@ class DataProvider:
         self.counts = dict(zip(timeframes, counts))  # Map timeframe to its count
         self.api_key = api_key
         self.app_id = app_id
-        self.base_url = base_url
         self.timeout = timeout
         self.retries = retries
         self.initial_fetch_timeout = initial_fetch_timeout
         self.live_polling_interval = live_polling_interval
 
-        self.data_store: Dict[str, DataFrame] = (
+        self.deriv_api: Optional[DerivAPI] = None  # Will be set in connect()
+        self.is_connected: bool = False  # Track connection status
+
+        self.data_store: Dict[str, pd.DataFrame] = (
             {}
         )  # Internal store for current data views
         self.last_fetched_time: Dict[str, datetime] = (
@@ -89,15 +92,55 @@ class DataProvider:
                 raise ValueError(
                     f"For 'csv' source_type, 'base_path' must be a valid directory. Got: {base_path}"
                 )
-            self.__load_initial_csv_data()
-        elif self.source_type == "live":
-            # For live, initial data will be fetched by the stream_data method
-            logger.info(
-                "Live data provider initialized. Data will be fetched on stream_data() call."
-            )
-            # Initialize next_fetch_time to allow immediate fetch
-            for tf in self.timeframes:
-                self.next_fetch_time[tf] = datetime.min  # Allow immediate fetch
+            self.__load_initial_csv_data()  # Assuming this is a synchronous method
+
+    async def connect(self):
+        """
+        Connects to the Deriv API and authorizes the client if source_type is 'live'.
+        This method should be called asynchronously before fetching live data.
+        """
+        if self.source_type == "live" and not self.is_connected:
+            logger.debug(f"Initializing Deriv API client with endpoint")
+
+            try:
+                self.deriv_api = DerivAPI(app_id=self.app_id, timeout=10)
+                authorize_response = await self.deriv_api.authorize(self.api_key)
+
+                if not authorize_response or authorize_response.get("error"):
+                    error_message = authorize_response.get("error", {}).get(
+                        "message", "Unknown authorization error"
+                    )
+                    raise RuntimeError(
+                        f"Failed to authorize with Deriv API. Error: {error_message}"
+                    )
+
+                self.is_connected = True
+                logger.info(
+                    f"Deriv API client authorized for account: {authorize_response['authorize']['loginid']}"
+                )
+
+                # Initialize next_fetch_time to allow immediate fetch
+                for tf in self.timeframes:
+                    self.next_fetch_time[tf] = datetime.min  # Allow immediate fetch
+            except Exception as e:
+                logger.error(f"Failed to connect and authorize Deriv API: {e}")
+                if self.deriv_api:
+                    await self.deriv_api.disconnect()
+                self.is_connected = False
+                raise  # Re-raise the exception to indicate connection failure
+        elif self.source_type == "live" and self.is_connected:
+            logger.info("Deriv API client already connected.")
+        elif self.source_type == "csv":
+            logger.info("Data source is CSV, no API connection needed.")
+
+    async def disconnect(self):
+        """
+        Disconnects the Deriv API client if it's connected.
+        """
+        if self.deriv_api and self.is_connected:
+            await self.deriv_api.disconnect()
+            self.is_connected = False
+            logger.info("Disconnected from Deriv API.")
 
     def __load_initial_csv_data(self) -> None:
         """
@@ -180,17 +223,21 @@ class DataProvider:
         else:
             raise ValueError(f"Unsupported timeframe format: {tf}")
 
-    def stream_data(self) -> Generator[Dict[str, pd.DataFrame], None, None]:
+    async def stream_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
         """
         Yields the latest data for each timeframe.
         In CSV mode, it simulates a stream. In live mode, it queries the API.
         """
         if self.source_type == "csv":
-            yield from self.__stream_csv_data()
+            # Use async for to iterate over the async generator __stream_csv_data
+            async for data in self.__stream_csv_data():
+                yield data
         elif self.source_type == "live":
-            yield from self.__stream_live_data()
+            # Use async for to iterate over the async generator __stream_live_data
+            async for data in self.__stream_live_data():
+                yield data
 
-    def __stream_csv_data(self) -> Generator[Dict[str, pd.DataFrame], None, None]:
+    async def __stream_csv_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
         """
         Streams historical data from loaded CSVs.
         Yields dataframes for each timeframe, with lengths equal to their respective counts,
@@ -268,7 +315,7 @@ class DataProvider:
             if all_timeframes_ready:
                 # All timeframes are now ready to provide data of required count
                 yield temp_data_for_check
-                logger.info(
+                logger.debug(
                     f"Initial CSV data yielded at {current_master_time} after warm-up."
                 )
                 initial_yield_achieved = True
@@ -292,7 +339,7 @@ class DataProvider:
         # --- Main Streaming Loop (continues from where warm-up left off) ---
         while current_master_time <= latest_overall_data_end:
             yielded_data_this_round = {}
-            at_least_one_tf_updated = False
+            # at_least_one_tf_updated = False
 
             for tf in sorted_timeframes:
                 df = self.data_store[tf]
@@ -312,7 +359,7 @@ class DataProvider:
 
                 if not sliced_df.empty and sliced_df.index.max() <= current_master_time:
                     yielded_data_this_round[tf] = sliced_df
-                    at_least_one_tf_updated = True
+                    # at_least_one_tf_updated = True
                     logger.debug(
                         f"Prepared {len(sliced_df)} records for {tf} ending at {sliced_df.index.max()}. (Target: {current_master_time})"
                     )
@@ -338,7 +385,9 @@ class DataProvider:
             "CSV data stream finished: Reached end of available historical data."
         )
 
-    def __stream_live_data(self) -> Generator[Dict[str, pd.DataFrame], None, None]:
+    async def __stream_live_data(
+        self,
+    ) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
         """
         Streams live data by querying the API, optimized with a master clock
         and intelligent polling based on timeframe frequencies.
@@ -354,7 +403,7 @@ class DataProvider:
 
         while time.time() - fetch_start_time < self.initial_fetch_timeout:
             try:
-                initial_data = self.__fetch_data_from_api(
+                initial_data = await self.__fetch_data_from_api(
                     self.symbol, self.timeframes, self.counts
                 )
 
@@ -467,7 +516,7 @@ class DataProvider:
                     try:
                         # Fetch the latest 'count' bars for this timeframe.
                         # API should ideally provide *closed* bars.
-                        new_data = self.__fetch_data_from_api_for_timeframe(
+                        new_data = await self.__fetch_data_from_api_for_timeframe(
                             self.symbol, tf, required_count
                         )
 
@@ -480,38 +529,34 @@ class DataProvider:
                                 last_fetched_dt is None
                                 or new_data_max_time > last_fetched_dt
                             ):
-                                logger.info(
+                                logger.debug(
                                     f"New data for {tf}. Latest bar ends at: {new_data_max_time}"
                                 )
 
                                 # Concatenate new data, handle potential overlaps, and trim to count
-                                if (
-                                    tf in self.data_store
-                                    and not self.data_store[tf].empty
-                                ):
-                                    combined_df = pd.concat(
-                                        [self.data_store[tf], new_data]
-                                    )
-                                    # Drop duplicates based on index (timestamps), keeping the latest
-                                    combined_df = combined_df[
-                                        ~combined_df.index.duplicated(keep="last")
-                                    ]
-                                    self.data_store[tf] = combined_df.iloc[
-                                        -required_count:
-                                    ]
-                                else:
-                                    # No existing data or empty, just store the new data (trimmed)
-                                    self.data_store[tf] = new_data.iloc[
-                                        -required_count:
-                                    ]
+                                # if (
+                                #     tf in self.data_store
+                                #     and not self.data_store[tf].empty
+                                # ):
+                                #     combined_df = pd.concat(
+                                #         [self.data_store[tf], new_data]
+                                #     )
+                                #     # Drop duplicates based on index (timestamps), keeping the latest
+                                #     combined_df = combined_df[
+                                #         ~combined_df.index.duplicated(keep="last")
+                                #     ]
+                                #     self.data_store[tf] = combined_df.iloc[
+                                #         -required_count:
+                                #     ]
+                                # else:
+                                # No existing data or empty, just store the new data (trimmed)
+                                self.data_store[tf] = new_data.iloc[-required_count:]
 
-                                self.validate_data(self.data_store[tf], tf)
+                                # self.validate_data(self.data_store[tf], tf)
                                 self.last_fetched_time[tf] = self.data_store[
                                     tf
                                 ].index.max()
-                                yielded_data_this_round[tf] = self.data_store[
-                                    tf
-                                ].copy()  # Mark for yielding
+                                yielded_data_this_round[tf] = True
 
                             else:
                                 logger.debug(
@@ -537,7 +582,7 @@ class DataProvider:
                     )
 
             if yielded_data_this_round:
-                logger.info(
+                logger.debug(
                     f"Yielded live data snapshot (containing updates for {len(yielded_data_this_round)} TFs) "
                     f"at master time {current_master_time}."
                 )
@@ -564,142 +609,143 @@ class DataProvider:
             logger.debug(f"Sleeping for {sleep_duration:.2f} seconds...")
             time.sleep(sleep_duration)
 
-    # --- Placeholder for actual API integration ---
-    def __fetch_data_from_api(
+    async def __fetch_data_from_api(
         self, symbol: str, timeframes: List[str], counts: Dict[str, int]
     ) -> Dict[str, pd.DataFrame]:
         """
-        Placeholder: Fetches initial batch of live data for all specified timeframes.
-        This would typically involve multiple API calls, one per timeframe.
+        Fetches initial batch of historical OHLC (candle) data for all specified timeframes
+        from the Deriv API using the 'candles' call.
+
+        Args:
+            symbol (str): The trading symbol (e.g., 'R_100').
+            timeframes (List[str]): A list of timeframe strings (e.g., ['1m', '5m', '1h']).
+            counts (Dict[str, int]): A dictionary mapping timeframe to the number of candles to fetch.
+
+        Returns:
+            Dict[str, pd.DataFrame]: A dictionary where keys are timeframes and values are pandas DataFrames
+                                     containing 'Open', 'High', 'Low', 'Close' data.
+                                     'Volume' is not provided by Deriv's candles API and will be omitted.
         """
-        logger.info(f"API: Fetching initial data for {symbol} on {timeframes}...")
-        # Simulate API call delay
-        # time.sleep(1)
+        # logger.info(f"API: Fetching initial OHLC data for {symbol} on {timeframes}...")
 
-        # This is a mock API response
-        mock_data = {}
+        # Ensure any previous subscriptions are cleared
+        await self.deriv_api.send({"forget_all": "candles"})
+        self.deriv_api
+
+        all_timeframe_data = {}
         for tf in timeframes:
-            # Generate dummy data for the count requested
-            num_records = counts.get(tf, 100)
-
-            # Adjust interval for dummy data generation
-            interval = self.__get_timeframe_interval(tf)
-
-            end_date = datetime.now().replace(microsecond=0)  # Round to nearest second
-            start_date = end_date - (num_records * interval)
-
-            dates = pd.date_range(start=start_date, end=end_date, freq=interval)
-
-            # Ensure we get exactly num_records or slightly more/less depending on freq
-            if len(dates) < num_records:
-                # If the freq doesn't give exact count, just take the last 'num_records'
-                # or create more dates
-                dates = pd.date_range(end=end_date, periods=num_records, freq=interval)
-            elif len(dates) > num_records:
-                dates = dates[-num_records:]
-
-            data = {
-                "Open": [random.uniform(1.0, 1.1) for _ in range(len(dates))],
-                "High": [random.uniform(1.1, 1.2) for _ in range(len(dates))],
-                "Low": [random.uniform(0.9, 1.0) for _ in range(len(dates))],
-                "Close": [random.uniform(1.0, 1.1) for _ in range(len(dates))],
-                "Volume": [random.randint(100, 1000) for _ in range(len(dates))],
+            num_records = counts.get(tf, 100)  # Default to 100 if not specified
+            granularity = self.__get_timeframe_interval(tf).seconds
+            request = {
+                "ticks_history": symbol,
+                "count": num_records,
+                "granularity": granularity,
+                "end": "latest",
+                "style": "candles",
             }
-            df = pd.DataFrame(data, index=dates)
-            df.index.name = "Date"
-            self.validate_data(df, tf)
-            mock_data[tf] = df
-            logger.debug(
-                f"API: Generated {len(df)} records for {tf} ending at {df.index.max()}"
-            )
-        return mock_data
 
-    def __fetch_data_from_api_for_timeframe(
+            try:
+                response = await asyncio.wait_for(
+                    self.deriv_api.send(request), timeout=10
+                )
+                if (
+                    response
+                    and response.get("msg_type") == "candles"
+                    and response.get("candles")
+                ):
+                    ohlc_data = response["candles"]
+                    # Create DataFrame
+                    df = pd.DataFrame(ohlc_data)
+                    df["Date"] = pd.to_datetime(df["epoch"], unit="s")
+                    df = df.set_index("Date")
+                    df = df[["open", "high", "low", "close"]].astype(float)
+                    df.columns = [
+                        "Open",
+                        "High",
+                        "Low",
+                        "Close",
+                    ]  # Rename columns for consistency
+                    df.index.name = "Date"
+
+                    # self.validate_data(df, tf) # Assuming validate_data exists and handles OHLC structure
+                    all_timeframe_data[tf] = df
+                    # logger.debug(
+                    #     f"API: Fetched {len(df)} OHLC records for {tf} ending at {df.index.max()}"
+                    # )
+                elif response and response.get("error"):
+                    logger.error(
+                        f"Error fetching candles for {symbol}/{tf}: {response['error']['message']}"
+                    )
+                else:
+                    logger.warning(
+                        f"No OHLC data found for {symbol}/{tf} or unexpected response."
+                    )
+            except Exception as e:
+                logger.error(f"An error occurred while fetching {symbol}/{tf}: {e}")
+        return all_timeframe_data
+
+    async def __fetch_data_from_api_for_timeframe(
         self, symbol: str, timeframe: str, count: int
     ) -> pd.DataFrame:
         """
-        Placeholder: Fetches the latest 'count' candles for a specific timeframe from the API.
-        This would be the actual API call for updates.
+        Fetches the latest 'count' OHLC (candle) data for a specific timeframe
+        from the Deriv API using the 'candles' call.
+
+        Args:
+            symbol (str): The trading symbol (e.g., 'R_100').
+            timeframe (str): The timeframe string (e.g., '1m', '1h').
+            count (int): The number of candles to fetch.
+
+        Returns:
+            pd.DataFrame: A pandas DataFrame containing 'Open', 'High', 'Low', 'Close' data.
+                          'Volume' is not provided by Deriv's candles API and will be omitted.
         """
-        logger.debug(
-            f"API: Fetching {count} latest candles for {symbol}/{timeframe}..."
-        )
-        # Simulate API call delay
-        # time.sleep(0.5)
+        # logger.debug(
+        #     f"API: Fetching {count} latest OHLC candles for {symbol}/{timeframe}..."
+        # )
 
-        # Generate dummy data for the count requested
-        interval = self.__get_timeframe_interval(timeframe)
-        end_date = datetime.now().replace(microsecond=0)
-        start_date = end_date - (count * interval)
+        granularity = self.__get_timeframe_interval(timeframe).seconds
 
-        dates = pd.date_range(start=start_date, end=end_date, freq=interval)
-        if len(dates) < count:
-            dates = pd.date_range(end=end_date, periods=count, freq=interval)
-        elif len(dates) > count:
-            dates = dates[-count:]
-
-        data = {
-            "Open": [random.uniform(1.0, 1.1) for _ in range(len(dates))],
-            "High": [random.uniform(1.1, 1.2) for _ in range(len(dates))],
-            "Low": [random.uniform(0.9, 1.0) for _ in range(len(dates))],
-            "Close": [random.uniform(1.0, 1.1) for _ in range(len(dates))],
-            "Volume": [random.randint(100, 1000) for _ in range(len(dates))],
+        request = {
+            "ticks_history": symbol,
+            "count": count,
+            "granularity": granularity,
+            "end": "latest",
+            "style": "candles",
         }
-        df = pd.DataFrame(data, index=dates)
-        df.index.name = "Date"
-        self.validate_data(df, timeframe)
-        logger.debug(
-            f"API: Generated {len(df)} records for {timeframe} ending at {df.index.max()}"
-        )
-        return df
 
+        try:
+            response = await asyncio.wait_for(self.deriv_api.send(request), timeout=10)
+            if (
+                response
+                and response.get("msg_type") == "candles"
+                and response.get("candles")
+            ):
+                ohlc_data = response["candles"]
+                df = pd.DataFrame(ohlc_data)
+                df["Date"] = pd.to_datetime(df["epoch"], unit="s")
+                df = df.set_index("Date")
+                df = df[["open", "high", "low", "close"]].astype(float)
+                df.columns = ["Open", "High", "Low", "Close"]
+                df.index.name = "Date"
 
-# class DataStore:
-#     """In-memory storage for loaded data."""
-
-#     def __init__(self):
-#         self.data = {}
-
-#     def add(self, timeframe: str, new_data: Union[DataFrame, Series]):
-#         """
-#         Appends new data (either a DataFrame or a Series) to the DataFrame for the given timeframe.
-#         If no DataFrame exists for the timeframe, it initializes it with the new data.
-#         """
-#         if timeframe not in self.data:
-#             # If no DataFrame exists, initialize it.
-#             # If new_data is a Series, convert it to a DataFrame (single row)
-#             self.data[timeframe] = (
-#                 new_data.to_frame().T if isinstance(new_data, Series) else new_data
-#             )
-#         else:
-#             # If a DataFrame already exists
-#             if isinstance(new_data, Series):
-#                 # If new_data is a Series, convert it to a DataFrame (single row)
-#                 # Ensure the Series has a name for its index if it's meant to be a new row with a meaningful index.
-#                 # If the Series needs to align by column names, ensure the Series index matches the DataFrame's columns.
-#                 new_data_df = new_data.to_frame().T
-#                 self.data[timeframe] = concat(
-#                     [self.data[timeframe], new_data_df], ignore_index=True
-#                 )
-#             elif isinstance(new_data, DataFrame):
-#                 # If new_data is a DataFrame, concatenate it
-#                 self.data[timeframe] = concat(
-#                     [self.data[timeframe], new_data], ignore_index=True
-#                 )
-#             else:
-#                 raise TypeError("new_data must be a pandas DataFrame or Series")
-
-#     def get(self, timeframe: str) -> DataFrame:
-#         """Retrieves the DataFrame for the given timeframe."""
-#         return self.data.get(timeframe)
-
-#     def summary(self):
-#         """Prints a summary (head, tail, describe) for each stored DataFrame."""
-#         for tf, df in self.data.items():
-#             logger.debug(f"\nTimeframe: {tf}")
-#             if not df.empty:
-#                 logger.debug(df.head(3))
-#                 logger.debug(df.tail(3))
-#                 logger.debug(df.describe())
-#             else:
-#                 logger.debug("DataFrame is empty.")
+                # self.validate_data(df, timeframe) # Assuming validate_data exists and handles OHLC structure
+                # logger.debug(
+                #     f"API: Fetched {len(df)} OHLC records for {timeframe} ending at {df.index.max()}"
+                # )
+                return df
+            elif response and response.get("error"):
+                logger.error(
+                    f"Error fetching candles for {symbol}/{timeframe}: {response['error']['message']}"
+                )
+                return pd.DataFrame()  # Return empty DataFrame on error
+            else:
+                logger.warning(
+                    f"No OHLC data found for {symbol}/{timeframe} or unexpected response."
+                )
+                return (
+                    pd.DataFrame()
+                )  # Return empty DataFrame if no data or unexpected response
+        except Exception as e:
+            logger.error(f"An error occurred while fetching {symbol}/{timeframe}: {e}")
+            return pd.DataFrame()  # Return empty DataFrame on exception

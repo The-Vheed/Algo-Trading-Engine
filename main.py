@@ -1,4 +1,5 @@
 import sys
+import asyncio
 
 from src.utils.logger import Logger
 
@@ -16,7 +17,7 @@ from src.core.data_provider import DataProvider
 # from src.api.deriv_client import DerivAPIClient
 
 
-def main():
+async def main():
     # Initialize configuration managers
     logger.info("Starting Trading System")
     logger.info(f"Loading configs...")
@@ -24,20 +25,28 @@ def main():
     risk_config = ConfigManager.load_config("config/risk_config.yaml")
     strategy_config = ConfigManager.load_config("config/strategy_config.yaml")
 
-    if strategy_config["backtesting"]["enabled"]:
+    if strategy_config["backtesting"]:
         logger.info("Backtesting. Loading historical data...")
         try:
-            csv_provider = DataProvider(
-                source_type="csv",
-                base_path="data/historical",
-                symbol="EURUSD",
-                timeframes=["H1", "H4"],
-                counts=[3, 3],
-            )
+            if strategy_config["data_source"] == "CSV":
+                csv_provider = DataProvider(
+                    source_type="csv",
+                    base_path="data/historical",
+                    symbol="EURUSD",
+                    timeframes=["H1", "H4"],
+                    counts=[3, 3],
+                )
+            else:
+                csv_provider = DataProvider(
+                    source_type="csv",
+                    base_path="data/historical",
+                    symbol="EURUSD",
+                    timeframes=["H1", "H4"],
+                    counts=[3, 3],
+                )
 
             csv_stream = csv_provider.stream_data()
-            for i, data_dict in enumerate(csv_stream):
-                logger.debug(f"CSV Stream - Iteration {i+1}:")
+            async for data_dict in csv_stream:
                 for tf, df in data_dict.items():
                     logger.debug(
                         f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
@@ -48,12 +57,6 @@ def main():
                         len(df) == csv_provider.counts[tf]
                     ), f"CSV yielded {tf} data has length {len(df)}, expected {csv_provider.counts[tf]}"
 
-                if i >= 5:
-                    logger.debug(
-                        "Stopping csv stream after 5 iterations for demonstration."
-                    )
-                    break
-
         except Exception as e:
             logger.error(f"Error during csv data stream: {e}")
             import traceback
@@ -61,7 +64,35 @@ def main():
             traceback.print_exc()
     else:
         logger.info("Live Trading. Loading live data...")
-        # data = data_provider.load_live_data("data/historical", "EURUSD", ["H1", "H4"])
+        try:
+            live_provider = DataProvider(
+                source_type="live",
+                app_id=api_config["app_id"],
+                api_key=api_config["api_key"],
+                symbol="R_25",
+                timeframes=["M1", "M5"],
+                counts=[3, 3],
+            )
+            await live_provider.connect()
+            # logger.info("Connected to live data provider.")
+
+            live_stream = live_provider.stream_data()
+            async for data_dict in live_stream:
+                for tf, df in data_dict.items():
+                    logger.debug(
+                        f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
+                        + str(df.tail(1))
+                    )
+                    # Assert length is correct for csv data as well
+                    assert (
+                        len(df) == live_provider.counts[tf]
+                    ), f"Live yielded {tf} data has length {len(df)}, expected {live_provider.counts[tf]}"
+
+        except Exception as e:
+            logger.error(f"Error during live data stream: {e}")
+            import traceback
+
+            traceback.print_exc()
 
     # indicator_engine = IndicatorEngine()
     # regime_detector = RegimeDetector()
@@ -89,4 +120,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -1,6 +1,13 @@
-strategy:
-  name: "EUR_USD_Dynamic_Regime"
-  version: "1.0"
+name: "EUR_USD_Dynamic_Regime"
+version: "1.0"
+
+backtesting: false
+data_source: "CSV"
+start_date: "2020-01-01"
+end_date: "2024-12-31"
+initial_balance: 10000
+commission_per_lot: 7.0
+spread_pips: 1.2
   
 market_regime:
   primary_indicator: "ADX"
@@ -91,11 +98,3 @@ monitoring:
       - "position_closed"
       - "risk_limit_breached"
 
-backtesting:
-  enabled: true
-  data_source: "CSV"
-  start_date: "2020-01-01"
-  end_date: "2024-12-31"
-  initial_balance: 10000
-  commission_per_lot: 7.0
-  spread_pips: 1.2

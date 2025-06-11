@@ -2,3 +2,5 @@ pandas
 numpy
 pyyaml
 pytest
+
+python-deriv-api

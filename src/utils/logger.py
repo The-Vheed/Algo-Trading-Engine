@@ -8,9 +8,9 @@ class Logger:
         os.makedirs("logs", exist_ok=True)  # Ensure logs directory exists
         file_handler = logging.FileHandler(f"logs/{name}.log")
 
-        self.logger.setLevel(logging.DEBUG)
-        stream_handler.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG)  # Set the default logging level
         file_handler.setLevel(logging.DEBUG)
+        stream_handler.setLevel(logging.INFO)
 
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
