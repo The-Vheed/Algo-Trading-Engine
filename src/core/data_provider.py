@@ -391,9 +391,8 @@ class DataProvider:
         """
         Streams live data by querying the API, optimized with a master clock
         and intelligent polling based on timeframe frequencies.
-        Yields dataframes for each timeframe, with lengths equal to their respective counts,
-        ensuring the end-timestamps are synchronized as much as possible, driven by
-        the master clock.
+        Only yields when new data is received for any timeframe.
+        Uses dynamic sleep timing aligned with the next timeframe interval.
         """
         logger.info("Starting live data stream with master clock...")
 
@@ -423,7 +422,6 @@ class DataProvider:
                     for tf, df in initial_data.items():
                         self.data_store[tf] = df
                         self.last_fetched_time[tf] = df.index.max()
-                        # Set next fetch time based on when the bar *should* close
                         self.next_fetch_time[tf] = (
                             df.index.max() + self.__get_timeframe_interval(tf)
                         )
@@ -465,57 +463,24 @@ class DataProvider:
         master_step_interval = self.__get_timeframe_interval(sorted_timeframes[0])
         logger.info(f"Master clock will advance by {master_step_interval}.")
 
-        # Initialize master clock to just after the latest fetched data point's "close time"
-        # or the next expected bar close for the fastest timeframe, aligned to its interval.
-        # We round current time down to the nearest master_step_interval boundary, then add one interval.
-        current_system_time_aligned = datetime.now().replace(microsecond=0)
-        if master_step_interval == timedelta(minutes=1):
-            current_system_time_aligned = current_system_time_aligned.replace(second=0)
-        elif master_step_interval == timedelta(minutes=5):
-            current_system_time_aligned = current_system_time_aligned.replace(second=0)
-            current_system_time_aligned -= timedelta(
-                minutes=current_system_time_aligned.minute % 5
-            )
-        else:  # master_step_interval == timedelta(hours=1):
-            current_system_time_aligned = current_system_time_aligned.replace(
-                minute=0, second=0
-            )
-
-        # Ensure master_clock starts at the next expected tick *after* all initial data.
+        # Align master clock to the next interval after the latest initial data
         latest_initial_data_end = max(self.last_fetched_time.values())
-        current_master_time = (
-            max(current_system_time_aligned, latest_initial_data_end)
-            + master_step_interval
-        )
+        current_master_time = latest_initial_data_end + master_step_interval
 
         logger.info(f"Master clock initialized to: {current_master_time}.")
 
         # --- Main Streaming Loop (Live Data) ---
         while True:
-            current_system_time = datetime.now()  # Actual system time for polling logic
-
-            # Advance master clock if the real system time has passed the current master clock's expected tick
-            if current_system_time >= current_master_time:
-                # Move master clock to the next full interval
-                current_master_time = current_master_time + master_step_interval
-                logger.debug(f"Master clock advanced to {current_master_time}.")
-
-            yielded_data_this_round = {}
+            current_system_time = datetime.now()
+            updated_any = False
 
             for tf in sorted_timeframes:
                 interval = self.__get_timeframe_interval(tf)
                 required_count = self.counts[tf]
 
-                # Only attempt to fetch if the current master clock has reached or passed
-                # the next expected fetch time for this specific timeframe.
+                # Only fetch if master clock has reached or passed the next fetch time for this TF
                 if current_master_time >= self.next_fetch_time[tf]:
-                    logger.debug(
-                        f"Fetching for {tf} as master clock {current_master_time} "
-                        f"is >= next_fetch_time {self.next_fetch_time[tf]}."
-                    )
                     try:
-                        # Fetch the latest 'count' bars for this timeframe.
-                        # API should ideally provide *closed* bars.
                         new_data = await self.__fetch_data_from_api_for_timeframe(
                             self.symbol, tf, required_count
                         )
@@ -524,40 +489,18 @@ class DataProvider:
                             new_data_max_time = new_data.index.max()
                             last_fetched_dt = self.last_fetched_time.get(tf)
 
-                            # If new data is genuinely newer or it's the first data
                             if (
                                 last_fetched_dt is None
                                 or new_data_max_time > last_fetched_dt
                             ):
-                                logger.debug(
-                                    f"New data for {tf}. Latest bar ends at: {new_data_max_time}"
-                                )
-
-                                # Concatenate new data, handle potential overlaps, and trim to count
-                                # if (
-                                #     tf in self.data_store
-                                #     and not self.data_store[tf].empty
-                                # ):
-                                #     combined_df = pd.concat(
-                                #         [self.data_store[tf], new_data]
-                                #     )
-                                #     # Drop duplicates based on index (timestamps), keeping the latest
-                                #     combined_df = combined_df[
-                                #         ~combined_df.index.duplicated(keep="last")
-                                #     ]
-                                #     self.data_store[tf] = combined_df.iloc[
-                                #         -required_count:
-                                #     ]
-                                # else:
-                                # No existing data or empty, just store the new data (trimmed)
                                 self.data_store[tf] = new_data.iloc[-required_count:]
-
-                                # self.validate_data(self.data_store[tf], tf)
                                 self.last_fetched_time[tf] = self.data_store[
                                     tf
                                 ].index.max()
-                                yielded_data_this_round[tf] = True
-
+                                updated_any = True
+                                logger.debug(
+                                    f"New data for {tf}. Latest bar ends at: {new_data_max_time}"
+                                )
                             else:
                                 logger.debug(
                                     f"No newer data from API for {tf}. "
@@ -567,47 +510,47 @@ class DataProvider:
                             logger.debug(
                                 f"API returned empty DataFrame for {tf}. No new data."
                             )
-
                     except Exception as e:
                         logger.error(f"Error fetching live data for {tf}: {e}")
 
-                    # IMPORTANT: Always update next_fetch_time for this TF *after* the attempt,
-                    # to prevent immediate re-fetching. It's set for the next time its interval passes
-                    # the current master clock.
-                    self.next_fetch_time[tf] = current_master_time + interval
-                else:
-                    logger.debug(
-                        f"Not yet time to fetch for {tf}. Master clock {current_master_time} "
-                        f"is < next_fetch_time {self.next_fetch_time[tf]}."
-                    )
+                    # Update next_fetch_time for this TF
+                    self.next_fetch_time[tf] = self.next_fetch_time[tf] + interval
 
-            if yielded_data_this_round:
-                logger.debug(
-                    f"Yielded live data snapshot (containing updates for {len(yielded_data_this_round)} TFs) "
-                    f"at master time {current_master_time}."
-                )
-                yield self.data_store.copy()  # Yield a copy of the entire current data_store
-            else:
-                logger.debug(
-                    f"No new data ready to yield at master time {current_master_time}."
+            # Only yield if we received new data for any timeframe
+            if updated_any:
+                yield self.data_store.copy()
+                logger.info(
+                    f"Yielded live data snapshot at master time {current_master_time} "
+                    f"(data updated)"
                 )
 
-            # Calculate optimal sleep duration until the next event (master clock tick or TF fetch time)
-            next_event_times = list(self.next_fetch_time.values()) + [
-                current_master_time + master_step_interval
-            ]
-            time_until_next_event_s = (
-                min(next_event_times) - datetime.now()
-            ).total_seconds()
+            # Advance master clock by one interval
+            current_master_time += master_step_interval
 
-            # Ensure sleep duration is non-negative and respects minimum polling interval
-            sleep_duration = max(self.live_polling_interval, time_until_next_event_s)
-            sleep_duration = max(
-                0.01, sleep_duration
-            )  # Minimum sleep to prevent busy-waiting
+            # Calculate precise sleep timing to wake up 0.25s after next candlestick closes
+            current_time = datetime.now()
+            smallest_tf = sorted_timeframes[0]
+            smallest_interval = self.__get_timeframe_interval(smallest_tf)
 
-            logger.debug(f"Sleeping for {sleep_duration:.2f} seconds...")
-            time.sleep(sleep_duration)
+            # Round current time down to the nearest interval
+            current_time_ts = current_time.timestamp()
+            interval_seconds = smallest_interval.total_seconds()
+            rounded_ts = (current_time_ts // interval_seconds) * interval_seconds
+
+            # Calculate next interval start and add 5s delay for data availability
+            next_interval_start = datetime.fromtimestamp(rounded_ts + interval_seconds)
+            target_wake_time = next_interval_start + timedelta(seconds=5)
+
+            # Calculate sleep duration to reach target wake time
+            sleep_duration = (target_wake_time - current_time).total_seconds()
+            sleep_duration = max(0.01, sleep_duration)  # Ensure positive sleep duration
+
+            logger.debug(
+                f"Next candle closes at {next_interval_start}, "
+                f"targeting wake at {target_wake_time} "
+                f"(sleeping {sleep_duration:.3f}s)"
+            )
+            await asyncio.sleep(sleep_duration)
 
     async def __fetch_data_from_api(
         self, symbol: str, timeframes: List[str], counts: Dict[str, int]
