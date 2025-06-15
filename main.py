@@ -9,7 +9,8 @@ logger = Logger(__name__)
 from src.utils.config import ConfigManager
 from src.core.data_provider import DataProvider
 
-# from src.core.indicator_engine import IndicatorEngine
+from src.core.indicator_engine import IndicatorEngine
+
 # from src.core.regime_detector import RegimeDetector
 # from src.core.strategy_engine import StrategyEngine
 # from src.core.risk_manager import RiskManager
@@ -21,14 +22,12 @@ async def main():
     # Initialize configuration managers
     logger.info("Starting Trading System")
     logger.info(f"Loading configs...")
-    api_config = ConfigManager.load_config("config/api_config.yaml")
-    risk_config = ConfigManager.load_config("config/risk_config.yaml")
-    strategy_config = ConfigManager.load_config("config/strategy_config.yaml")
+    config = ConfigManager.load_config("config/main.yaml")
 
-    if strategy_config["backtesting"]:
+    if not config["live"]:
         logger.info("Backtesting. Loading historical data...")
         try:
-            if strategy_config["data_source"] == "CSV":
+            if config["backtesting"]["data_source"] == "CSV":
                 csv_provider = DataProvider(
                     source_type="csv",
                     base_path="data/historical",
@@ -52,6 +51,7 @@ async def main():
                         f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
                         + str(df.tail(1))
                     )
+
                     # Assert length is correct for csv data as well
                     assert (
                         len(df) == csv_provider.counts[tf]
@@ -67,8 +67,8 @@ async def main():
         try:
             live_provider = DataProvider(
                 source_type="live",
-                app_id=api_config["app_id"],
-                api_key=api_config["api_key"],
+                app_id=config["api"]["app_id"],
+                api_key=config["api"]["key"],
                 symbol="R_25",
                 timeframes=["M1", "M5"],
                 counts=[3, 3],
