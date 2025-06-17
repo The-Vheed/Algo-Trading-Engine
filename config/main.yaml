@@ -16,174 +16,198 @@ backtesting:
   spread_pips: 1.2
 
 # ----------------------------------------------------------------------------------
-# General Strategy Settings
+# Strategy Configuration
 # ----------------------------------------------------------------------------------
 strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
   instruments: ["EUR/USD"]
-  # Define all timeframes the strategy might need for calculations.
   timeframes: ["H1", "H4"]
 
   # ----------------------------------------------------------------------------------
-  # 1. DEFINE INDICATORS
-  # Centralized list of all indicators to be calculated. Each indicator gets a unique
-  # name that will be referenced in the logic sections below.
+  # 1. INDICATORS BY TIMEFRAME
   # ----------------------------------------------------------------------------------
   indicators:
-    # Regime & Volatility Indicators (on H4 timeframe)
-    - name: "regime_adx"
-      timeframe: "H4"
-      type: "ADX"
-      params: { period: 14 }
-    - name: "volatility_bbw"
-      timeframe: "H4"
-      type: "BBW" # Bollinger Bands Width
-      params: { period: 20, std_dev: 2.0 }
-
-    # Trending Strategy Indicators
-    - name: "trend_ema_fast_H4"
-      timeframe: "H4"
-      type: "EMA"
-      params: { period: 50 }
-    - name: "trend_ema_slow_H4"
-      timeframe: "H4"
-      type: "EMA"
-      params: { period: 200 }
-    - name: "trend_ema_fast_H1"
-      timeframe: "H1"
-      type: "EMA"
-      params: { period: 20 }
-    - name: "trend_ema_slow_H1"
-      timeframe: "H1"
-      type: "EMA"
-      params: { period: 50 }
-    - name: "trend_macd_H1"
-      timeframe: "H1"
-      type: "MACD"
-      params: { fast: 12, slow: 26, signal: 9 }
-    - name: "trend_atr_H1"
-      timeframe: "H1"
-      type: "ATR"
-      params: { period: 14 }
-
-    # Ranging Strategy Indicators
-    - name: "range_stoch_H1"
-      timeframe: "H1"
-      type: "STOCH"
-      params: { k_period: 14, d_period: 3, smoothing: 3 }
-    - name: "range_sr_H1"
-      timeframe: "H1"
-      type: "PIVOT" # Example for Support/Resistance
-      params: { method: "classic" }
-    - name: "range_atr_H1"
-      timeframe: "H1"
-      type: "ATR"
-      params: { period: 14 }
+    H4:
+      - name: "regime_adx"
+        type: "ADX"
+        params: { period: 14 }
+      - name: "volatility_bbw"
+        type: "BBW"
+        params: { period: 20, std_dev: 2.0 }
+      - name: "trend_ema_fast"
+        type: "EMA"
+        params: { period: 50 }
+      - name: "trend_ema_slow"
+        type: "EMA"
+        params: { period: 200 }
+    H1:
+      - name: "trend_ema_fast"
+        type: "EMA"
+        params: { period: 20 }
+      - name: "trend_ema_slow"
+        type: "EMA"
+        params: { period: 50 }
+      - name: "trend_macd"
+        type: "MACD"
+        params: { fast: 12, slow: 26, signal: 9 }
+      - name: "trend_atr"
+        type: "ATR"
+        params: { period: 14 }
+      - name: "range_stoch"
+        type: "STOCH"
+        params: { k_period: 14, d_period: 3, smoothing: 3 }
+      - name: "range_sr"
+        type: "PIVOT"
+        params: { method: "classic" }
+      - name: "range_atr"
+        type: "ATR"
+        params: { period: 14 }
 
   # ----------------------------------------------------------------------------------
-  # 2. DEFINE MARKET REGIME
-  # A set of rules to determine the current market state (TRENDING, RANGING, etc.).
-  # Rules are evaluated in order; the first one that matches sets the regime.
+  # 2. MARKET REGIME LOGIC
   # ----------------------------------------------------------------------------------
-  regime_filter:
-    - when: # Defines a condition for a TRENDING market
-        # Reference indicators by name. The system will get the latest value.
-        - "regime_adx.adx > 25"
-        # Example of using the volatility filter with a calculated percentile.
-        - "volatility_bbw.width > percentile(volatility_bbw.width, 75)"
-      then: "TRENDING"
-
-    - when: # Defines a condition for a RANGING market
-        - "regime_adx.adx < 20"
-        - "volatility_bbw.width < percentile(volatility_bbw.width, 25)"
-      then: "RANGING"
-
-    - when: "default" # If no other condition is met
-      then: "NEUTRAL"
+  regime_logic:
+    rules:
+      - name: "TRENDING"
+        conditions:
+          - "H4.regime_adx.adx > 25"
+          - "H4.volatility_bbw.width > percentile(H4.volatility_bbw.width, 75)"
+      - name: "RANGING"
+        conditions:
+          - "H4.regime_adx.adx < 20"
+          - "H4.volatility_bbw.width < percentile(H4.volatility_bbw.width, 25)"
+      - name: "NEUTRAL"
+        conditions:
+          - "default"
 
   # ----------------------------------------------------------------------------------
-  # 3. DEFINE SIGNAL LOGIC
-  # Contains the entry and exit logic for each regime defined above.
+  # 3. TRADING LOGIC BY REGIME
   # ----------------------------------------------------------------------------------
-  signal_logic:
-    # --- Logic for when the market is TRENDING ---
+  trading_logic:
     TRENDING:
-      entry:
-        - action: "BUY"
-          condition_group: "all" # 'all' means AND
-          rules:
-            # Higher timeframe trend confirmation
-            - "trend_ema_fast_H4 > trend_ema_slow_H4"
-            # Entry timeframe trend alignment
-            - "trend_ema_fast_H1 > trend_ema_slow_H1"
-            # Momentum confirmation
-            - "trend_macd_H1.histogram > 0"
-
-        - action: "SELL"
-          condition_group: "all"
-          rules:
-            - "trend_ema_fast_H4 < trend_ema_slow_H4"
-            - "trend_ema_fast_H1 < trend_ema_slow_H1"
-            - "trend_macd_H1.histogram < 0"
-      exit:
+      entries:
+        BUY:
+          conditions:
+            - "H4.trend_ema_fast > H4.trend_ema_slow"
+            - "H1.trend_ema_fast > H1.trend_ema_slow"
+            - "H1.trend_macd.histogram > 0"
+        SELL:
+          conditions:
+            - "H4.trend_ema_fast < H4.trend_ema_slow"
+            - "H1.trend_ema_fast < H1.trend_ema_slow"
+            - "H1.trend_macd.histogram < 0"
+      exits:
         stop_loss:
           method: "ATR"
-          # Explicitly state which ATR indicator to use for the stop loss calculation
-          atr_indicator: "trend_atr_H1"
+          indicator: "H1.trend_atr"
           multiplier: 2.0
-        take_profit:
-          # Partial take profit at 1:1 Risk/Reward
-          - method: "risk_reward"
-            rr_ratio: 1.0
-            action: "partial_close"
-            amount_percent: 50
-          # Final take profit
-          - method: "risk_reward"
-            rr_ratio: 2.0
-            action: "full_close"
+        take_profits:
+          - { method: "risk_reward", ratio: 1.0, action: "partial_close", percent: 50 }
+          - { method: "risk_reward", ratio: 2.0, action: "full_close" }
 
-    # --- Logic for when the market is RANGING ---
     RANGING:
-      entry:
-        - action: "BUY"
-          condition_group: "all"
-          rules:
-            # Buy at support, confirmed by oversold stochastic and bullish candle
-            - "price.low near range_sr_H1.S1" # 'near' implies a proximity check
-            - "range_stoch_H1.k < 20"
+      entries:
+        BUY:
+          conditions:
+            - "price.low near H1.range_sr.S1"
+            - "H1.range_stoch.k < 20"
             - "candlestick_pattern is bullish"
-
-        - action: "SELL"
-          condition_group: "all"
-          rules:
-            # Sell at resistance, confirmed by overbought stochastic and bearish candle
-            - "price.high near range_sr_H1.R1"
-            - "range_stoch_H1.k > 80"
+        SELL:
+          conditions:
+            - "price.high near H1.range_sr.R1"
+            - "H1.range_stoch.k > 80"
             - "candlestick_pattern is bearish"
-      exit:
+      exits:
         stop_loss:
           method: "ATR"
-          atr_indicator: "range_atr_H1"
-          multiplier: 1.5 # Tighter SL for ranging markets
-        take_profit:
-          # Target the other side of the range
-          - method: "level"
-            target: "opposite_level" # e.g., if entry is near S1, target is R1
-            action: "full_close"
+          indicator: "H1.range_atr"
+          multiplier: 1.5
+        take_profits:
+          # Primary TP - Target the opposite end of the range
+          - { 
+              method: "level", 
+              target: "opposite_level", 
+              target_details: { 
+                buy: "H1.range_sr.R1", 
+                sell: "H1.range_sr.S1" 
+              },
+              action: "partial_close",
+              percent: 75
+            }
+          # Secondary TP - Based on risk-reward ratio as a backup
+          - { 
+              method: "risk_reward", 
+              ratio: 1.5, 
+              action: "full_close" 
+            }
+          # Mid-range TP for wide ranges (optional)
+          - { 
+              method: "level", 
+              target: "mid_range", 
+              condition: "range_width > 2.5 * H1.range_atr",
+              action: "partial_close", 
+              percent: 50 
+            }
 
-# Monitoring and Alerts Configuration
-monitoring:
-  performance_tracking:
-    enabled: true
-    metrics: ["profit_factor", "sharpe_ratio", "max_drawdown", "win_rate"]
-  
-  alerts:
-    enabled: true
-    channels: ["console", "file"]
-    conditions:
-      - "regime_change"
-      - "position_opened"
-      - "position_closed"
-      - "risk_limit_breached"
-
+  # ----------------------------------------------------------------------------------
+  # 4. RISK MANAGEMENT
+  # ----------------------------------------------------------------------------------
+  risk_management:
+    # Position Sizing
+    position_sizing:
+      method: "fixed_fractional"  # Options: fixed_fractional, fixed_lot, volatility_adjusted
+      risk_per_trade: 1.0  # Percentage of account equity to risk per trade (0.5-1.5% recommended)
+      max_position_size: 5.0  # Maximum position size in lots
+      min_position_size: 0.01  # Minimum position size in lots
+    
+    # Trade Management
+    trade_management:
+      max_concurrent_trades: 3  # Maximum number of open trades at any time
+      allow_opposing_trades: false  # Whether to allow both long and short positions simultaneously
+      # neutral_regime_position_scale: 0.5  # Scale position size to 50% in neutral regime
+    
+    # Drawdown Protection
+    drawdown_protection:
+      daily_loss_limit:
+        enabled: true
+        percentage: 3.0  # Stop trading if daily loss exceeds 3% of account equity
+      weekly_loss_limit:
+        enabled: true
+        percentage: 5.0  # Stop trading if weekly loss exceeds 5% of account equity
+      monthly_loss_limit:
+        enabled: true
+        percentage: 10.0  # Stop trading if monthly loss exceeds 10% of account equity
+      max_consecutive_losses: 5  # Pause trading after 5 consecutive losses
+    
+    # Profit Taking & Trade Management
+    profit_management:
+      breakeven_move:
+        enabled: true
+        after_reward_ratio: 0.8  # Move SL to breakeven after price moves 0.8x the risk distance
+      trailing_stop:
+        method: "ATR"  # Options: ATR, fixed, percentage, indicator
+        activation: 1.0  # Activate trailing stop after 1.0x risk:reward
+        params: {
+          multiplier: 2.0,  # For ATR method: 2.0x ATR
+          indicator: "H1.trend_atr"  # Which ATR indicator to use
+        }
+    
+    # Time Filters
+    time_filters:
+      # Avoid trading during major news events
+      avoid_news: true
+      # Avoid trading during low liquidity periods
+      sessions:
+        - name: "Asian"
+          enabled: false  # Don't trade during Asian session
+          start_time: "00:00"
+          end_time: "08:00"
+        - name: "London"
+          enabled: true  # Allow trading during London session
+          start_time: "08:00"
+          end_time: "16:00"
+        - name: "New York"
+          enabled: true  # Allow trading during New York session
+          start_time: "13:00"
+          end_time: "21:00"
