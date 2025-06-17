@@ -1,6 +1,8 @@
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
+from ta.trend import ADXIndicator, MACD, EMAIndicator
+from ta.volatility import BollingerBands, AverageTrueRange
+from ta.momentum import StochasticOscillator
 from typing import Dict, List, Any, Optional, Union
 
 
@@ -67,7 +69,7 @@ class IndicatorEngine:
         self, df: pd.DataFrame, indicator_type: str, params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Calculate a single indicator using pandas_ta or custom logic.
+        Calculate a single indicator using the 'ta' library.
 
         Args:
             df: DataFrame with OHLCV data
@@ -111,52 +113,83 @@ class IndicatorEngine:
             }
         """
         try:
+            # Standard column renaming to ensure compatibility
+            # 'ta' library expects lowercase column names
+            df_lower = df.copy()
+            if "Open" in df.columns:
+                df_lower.columns = [col.lower() for col in df.columns]
+
             # Handle different indicator types
             if indicator_type == "ADX":
                 period = params.get("period", 14)
-                adx = ta.adx(df["high"], df["low"], df["close"], length=period)
+                adx_indicator = ADXIndicator(
+                    high=df_lower["high"],
+                    low=df_lower["low"],
+                    close=df_lower["close"],
+                    window=period,
+                )
+
+                adx = adx_indicator.adx()
+                pdi = adx_indicator.adx_pos()
+                ndi = adx_indicator.adx_neg()
+
                 return {
-                    "adx": adx[f"ADX_{period}"].iloc[-1],
-                    "plus_di": adx[f"DMP_{period}"].iloc[-1],
-                    "minus_di": adx[f"DMN_{period}"].iloc[-1],
+                    "adx": adx.iloc[-1],
+                    "plus_di": pdi.iloc[-1],
+                    "minus_di": ndi.iloc[-1],
                     "series": {
-                        "adx": adx[f"ADX_{period}"].to_dict(),
-                        "plus_di": adx[f"DMP_{period}"].to_dict(),
-                        "minus_di": adx[f"DMN_{period}"].to_dict(),
+                        "adx": adx.to_dict(),
+                        "plus_di": pdi.to_dict(),
+                        "minus_di": ndi.to_dict(),
                     },
                 }
 
             elif indicator_type == "EMA":
                 period = params.get("period", 20)
-                ema = ta.ema(df["close"], length=period)
+                ema_indicator = EMAIndicator(close=df_lower["close"], window=period)
+                ema = ema_indicator.ema_indicator()
                 return {"value": ema.iloc[-1], "series": ema.to_dict()}
 
             elif indicator_type == "MACD":
                 fast = params.get("fast", 12)
                 slow = params.get("slow", 26)
                 signal = params.get("signal", 9)
-                macd = ta.macd(df["close"], fast=fast, slow=slow, signal=signal)
+
+                macd_indicator = MACD(
+                    close=df_lower["close"],
+                    window_fast=fast,
+                    window_slow=slow,
+                    window_sign=signal,
+                )
+
+                macd_line = macd_indicator.macd()
+                signal_line = macd_indicator.macd_signal()
+                histogram = macd_indicator.macd_diff()
 
                 return {
-                    "macd": macd[f"MACD_{fast}_{slow}_{signal}"].iloc[-1],
-                    "signal": macd[f"MACDs_{fast}_{slow}_{signal}"].iloc[-1],
-                    "histogram": macd[f"MACDh_{fast}_{slow}_{signal}"].iloc[-1],
+                    "macd": macd_line.iloc[-1],
+                    "signal": signal_line.iloc[-1],
+                    "histogram": histogram.iloc[-1],
                     "series": {
-                        "macd": macd[f"MACD_{fast}_{slow}_{signal}"].to_dict(),
-                        "signal": macd[f"MACDs_{fast}_{slow}_{signal}"].to_dict(),
-                        "histogram": macd[f"MACDh_{fast}_{slow}_{signal}"].to_dict(),
+                        "macd": macd_line.to_dict(),
+                        "signal": signal_line.to_dict(),
+                        "histogram": histogram.to_dict(),
                     },
                 }
 
             elif indicator_type == "BBW":
                 period = params.get("period", 20)
                 std_dev = params.get("std_dev", 2.0)
-                bbands = ta.bbands(df["close"], length=period, std=std_dev)
+
+                bb_indicator = BollingerBands(
+                    close=df_lower["close"], window=period, window_dev=std_dev
+                )
+
+                upper = bb_indicator.bollinger_hband()
+                lower = bb_indicator.bollinger_lband()
+                middle = bb_indicator.bollinger_mavg()
 
                 # Calculate bandwidth
-                upper = bbands[f"BBU_{period}_{std_dev}"]
-                lower = bbands[f"BBL_{period}_{std_dev}"]
-                middle = bbands[f"BBM_{period}_{std_dev}"]
                 bandwidth = (upper - lower) / middle
 
                 return {
@@ -174,7 +207,13 @@ class IndicatorEngine:
 
             elif indicator_type == "ATR":
                 period = params.get("period", 14)
-                atr = ta.atr(df["high"], df["low"], df["close"], length=period)
+                atr_indicator = AverageTrueRange(
+                    high=df_lower["high"],
+                    low=df_lower["low"],
+                    close=df_lower["close"],
+                    window=period,
+                )
+                atr = atr_indicator.average_true_range()
 
                 return {"value": atr.iloc[-1], "series": atr.to_dict()}
 
@@ -183,30 +222,32 @@ class IndicatorEngine:
                 d_period = params.get("d_period", 3)
                 smooth = params.get("smoothing", 3)
 
-                stoch = ta.stoch(
-                    df["high"],
-                    df["low"],
-                    df["close"],
-                    k=k_period,
-                    d=d_period,
-                    smooth=smooth,
+                stoch_indicator = StochasticOscillator(
+                    high=df_lower["high"],
+                    low=df_lower["low"],
+                    close=df_lower["close"],
+                    window=k_period,
+                    smooth_window=smooth,
                 )
 
+                k = stoch_indicator.stoch()
+                d = stoch_indicator.stoch_signal()
+
                 return {
-                    "k": stoch[f"STOCHk_{k_period}_{d_period}_{smooth}"].iloc[-1],
-                    "d": stoch[f"STOCHd_{k_period}_{d_period}_{smooth}"].iloc[-1],
+                    "k": k.iloc[-1],
+                    "d": d.iloc[-1],
                     "series": {
-                        "k": stoch[f"STOCHk_{k_period}_{d_period}_{smooth}"].to_dict(),
-                        "d": stoch[f"STOCHd_{k_period}_{d_period}_{smooth}"].to_dict(),
+                        "k": k.to_dict(),
+                        "d": d.to_dict(),
                     },
                 }
 
             elif indicator_type == "PIVOT":
                 method = params.get("method", "classic")
                 # Get the previous day's data for pivot calculation
-                high = df["high"].iloc[-2]
-                low = df["low"].iloc[-2]
-                close = df["close"].iloc[-2]
+                high = df_lower["high"].iloc[-2]
+                low = df_lower["low"].iloc[-2]
+                close = df_lower["close"].iloc[-2]
 
                 # Calculate classic pivot points
                 pivot = (high + low + close) / 3

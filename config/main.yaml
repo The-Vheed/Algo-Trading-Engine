@@ -22,13 +22,13 @@ strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
   instruments: ["EUR/USD"]
-  timeframes: ["H1", "H4"]
+  timeframes: ["M1", "M5"]
 
   # ----------------------------------------------------------------------------------
   # 1. INDICATORS BY TIMEFRAME
   # ----------------------------------------------------------------------------------
   indicators:
-    H4:
+    M1:
       - name: "regime_adx"
         type: "ADX"
         params: { period: 14 }
@@ -41,7 +41,7 @@ strategy:
       - name: "trend_ema_slow"
         type: "EMA"
         params: { period: 200 }
-    H1:
+    M5:
       - name: "trend_ema_fast"
         type: "EMA"
         params: { period: 20 }

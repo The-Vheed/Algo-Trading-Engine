@@ -2,6 +2,8 @@ pandas
 numpy
 pyyaml
 pytest
+setuptools
 
 python-deriv-api
-pandas_ta
+# pandas_ta
+ta
