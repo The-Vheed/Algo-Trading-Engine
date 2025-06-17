@@ -192,8 +192,21 @@ class IndicatorEngine:
                 # Calculate bandwidth
                 bandwidth = (upper - lower) / middle
 
+                # Calculate historical percentiles for bandwidth if enough data
+                if len(bandwidth) >= 20:
+                    width_values = bandwidth.dropna().values
+                    width_percentile_25 = np.percentile(width_values, 25)
+                    width_percentile_75 = np.percentile(width_values, 75)
+                else:
+                    width_percentile_25 = bandwidth.iloc[-1] * 0.75  # Fallback
+                    width_percentile_75 = bandwidth.iloc[-1] * 1.25  # Fallback
+
                 return {
-                    "width": bandwidth.iloc[-1],
+                    "width": {
+                        "value": bandwidth.iloc[-1],
+                        "percentile_25": width_percentile_25,
+                        "percentile_75": width_percentile_75,
+                    },
                     "upper": upper.iloc[-1],
                     "middle": middle.iloc[-1],
                     "lower": lower.iloc[-1],

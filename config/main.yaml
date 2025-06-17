@@ -71,12 +71,12 @@ strategy:
     rules:
       - name: "TRENDING"
         conditions:
-          - "H4.regime_adx.adx > 25"
-          - "H4.volatility_bbw.width > percentile(H4.volatility_bbw.width, 75)"
+          - "M1.regime_adx.adx > 25"
+          - "M1.volatility_bbw.width.value > M1.volatility_bbw.width.percentile_75"
       - name: "RANGING"
         conditions:
-          - "H4.regime_adx.adx < 20"
-          - "H4.volatility_bbw.width < percentile(H4.volatility_bbw.width, 25)"
+          - "M1.regime_adx.adx < 20"
+          - "M1.volatility_bbw.width.value < M1.volatility_bbw.width.percentile_25"
       - name: "NEUTRAL"
         conditions:
           - "default"
@@ -89,18 +89,20 @@ strategy:
       entries:
         BUY:
           conditions:
-            - "H4.trend_ema_fast > H4.trend_ema_slow"
-            - "H1.trend_ema_fast > H1.trend_ema_slow"
-            - "H1.trend_macd.histogram > 0"
+            - "M1.trend_ema_fast.value > M1.trend_ema_slow.value"
+            - "M5.trend_ema_fast.value > M5.trend_ema_slow.value"
+            - "M5.trend_macd.histogram > 0"
+            - "price.close > price.open" # Additional bullish confirmation
         SELL:
           conditions:
-            - "H4.trend_ema_fast < H4.trend_ema_slow"
-            - "H1.trend_ema_fast < H1.trend_ema_slow"
-            - "H1.trend_macd.histogram < 0"
+            - "M1.trend_ema_fast.value < M1.trend_ema_slow.value"
+            - "M5.trend_ema_fast.value < M5.trend_ema_slow.value"
+            - "M5.trend_macd.histogram < 0"
+            - "price.close < price.open" # Additional bearish confirmation
       exits:
         stop_loss:
           method: "ATR"
-          indicator: "H1.trend_atr"
+          indicator: "M5.trend_atr"
           multiplier: 2.0
         take_profits:
           - { method: "risk_reward", ratio: 1.0, action: "partial_close", percent: 50 }
@@ -110,28 +112,36 @@ strategy:
       entries:
         BUY:
           conditions:
-            - "price.low near H1.range_sr.S1"
-            - "H1.range_stoch.k < 20"
-            - "candlestick_pattern is bullish"
+            # Replace vague "near" with specific range check
+            - "price.low >= M5.range_sr.S1 * 0.9995" # Within 0.05% below support
+            - "price.low <= M5.range_sr.S1 * 1.0005" # Within 0.05% above support
+            - "M5.range_stoch.k < 20"
+            # Replace vague "candlestick is bullish" with specific conditions
+            - "price.close > price.open" # Bullish candle
+            - "price.close > price.low + ((price.high - price.low) * 0.6)" # Strong close in upper portion
+            - "price.close > price.previous_close" # Higher than previous close
         SELL:
           conditions:
-            - "price.high near H1.range_sr.R1"
-            - "H1.range_stoch.k > 80"
-            - "candlestick_pattern is bearish"
+            # Replace vague "near" with specific range check
+            - "price.high <= M5.range_sr.R1 * 1.0005" # Within 0.05% above resistance
+            - "price.high >= M5.range_sr.R1 * 0.9995" # Within 0.05% below resistance
+            - "M5.range_stoch.k > 80"
+            # Replace vague "candlestick is bearish" with specific conditions
+            - "price.close < price.open" # Bearish candle
+            - "price.close < price.high - ((price.high - price.low) * 0.6)" # Strong close in lower portion
+            - "price.close < price.previous_close" # Lower than previous close
       exits:
         stop_loss:
           method: "ATR"
-          indicator: "H1.range_atr"
+          indicator: "M5.range_atr"
           multiplier: 1.5
         take_profits:
-          # Primary TP - Target the opposite end of the range
+          # Primary TP - Target the opposite end of the range with explicit references
           - { 
               method: "level", 
-              target: "opposite_level", 
-              target_details: { 
-                buy: "H1.range_sr.R1", 
-                sell: "H1.range_sr.S1" 
-              },
+              target: "explicit_level", 
+              buy_target: "M5.range_sr.R1",
+              sell_target: "M5.range_sr.S1",
               action: "partial_close",
               percent: 75
             }
@@ -141,11 +151,13 @@ strategy:
               ratio: 1.5, 
               action: "full_close" 
             }
-          # Mid-range TP for wide ranges (optional)
+          # Mid-range TP for wide ranges with explicit condition
           - { 
               method: "level", 
-              target: "mid_range", 
-              condition: "range_width > 2.5 * H1.range_atr",
+              target: "mid_level",
+              buy_target: "(price.entry + M5.range_sr.R1) / 2",
+              sell_target: "(price.entry + M5.range_sr.S1) / 2",
+              condition: "(M5.range_sr.R1 - M5.range_sr.S1) > (2.5 * M5.range_atr.value)",
               action: "partial_close", 
               percent: 50 
             }

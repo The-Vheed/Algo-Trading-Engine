@@ -8,6 +8,7 @@ logger = Logger(__name__)
 from src.utils.config import ConfigManager
 from src.core.data_provider import DataProvider
 from src.core.indicator_engine import IndicatorEngine
+from src.core.regime_detector import RegimeDetector
 
 
 async def main():
@@ -54,6 +55,10 @@ async def main():
         f"Indicator definitions parsed: {len(indicator_engine.indicator_definitions)} timeframes"
     )
 
+    # Initialize regime detector
+    logger.info("Initializing regime detector...")
+    regime_detector = RegimeDetector(config)
+
     if not config["live"]:
         logger.info("Backtesting. Loading historical data...")
         try:
@@ -90,6 +95,10 @@ async def main():
                 # Calculate indicators from the current data snapshot
                 indicators = indicator_engine.calculate_indicators(data_dict)
 
+                # Detect market regime
+                current_regime = regime_detector.detect_regime(indicators)
+                logger.info(f"Current market regime: {current_regime}")
+
                 # Log some indicator values for verification
                 logger.info("Calculated indicators:")
                 for timeframe, indicators_dict in indicators.items():
@@ -101,7 +110,7 @@ async def main():
                         }
                         logger.info(f"  {indicator_name}: {current_values}")
 
-                # Here you would proceed with regime detection, strategy execution, etc.
+                # Here you would proceed with strategy execution using the detected regime
 
         except Exception as e:
             logger.error(f"Error during csv data stream: {e}")
@@ -137,6 +146,10 @@ async def main():
                 # Calculate indicators from the live data snapshot
                 indicators = indicator_engine.calculate_indicators(data_dict)
 
+                # Detect market regime
+                current_regime = regime_detector.detect_regime(indicators)
+                logger.info(f"Current market regime (live): {current_regime}")
+
                 # Log some indicator values for verification
                 logger.info("Calculated indicators (live):")
                 for timeframe, indicators_dict in indicators.items():
@@ -148,7 +161,7 @@ async def main():
                         }
                         logger.info(f"  {indicator_name}: {current_values}")
 
-                # Here you would proceed with regime detection, strategy execution, etc.
+                # Here you would proceed with strategy execution using the detected regime
 
         except Exception as e:
             logger.error(f"Error during live data stream: {e}")
