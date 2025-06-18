@@ -193,7 +193,7 @@ async def main():
                     )  # Changed to debug
 
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt detected. Shutting down gracefully...")
+        logger.info("\nKeyboard interrupt detected. Shutting down gracefully...")
         # Make sure to disconnect if using live provider
         if live_provider and hasattr(live_provider, "disconnect"):
             await live_provider.disconnect()
@@ -204,7 +204,7 @@ async def main():
 
         traceback.print_exc()
     finally:
-        logger.info("Stopped Trading System")
+        logger.info("\nStopped Trading System")
 
 
 if __name__ == "__main__":

@@ -631,6 +631,12 @@ class DataProvider:
                     logger.warning(
                         f"No OHLC data found for {symbol}/{tf} or unexpected response."
                     )
+            except TimeoutError:
+                logger.error(
+                    f"Timeout while fetching candles for {symbol}/{tf}. "
+                    f"Check your connection or API limits."
+                )
+                return pd.DataFrame()
             except Exception as e:
                 logger.error(f"An error occurred while fetching {symbol}/{tf}: {e}")
         return all_timeframe_data
@@ -697,6 +703,12 @@ class DataProvider:
                 return (
                     pd.DataFrame()
                 )  # Return empty DataFrame if no data or unexpected response
+        except TimeoutError:
+            logger.error(
+                f"Timeout while fetching candles for {symbol}/{timeframe}. "
+                f"Check your connection or API limits."
+            )
+            return pd.DataFrame()
         except Exception as e:
             logger.error(f"An error occurred while fetching {symbol}/{timeframe}: {e}")
             return pd.DataFrame()  # Return empty DataFrame on exception
