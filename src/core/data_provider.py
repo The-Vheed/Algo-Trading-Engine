@@ -129,9 +129,11 @@ class DataProvider:
                 self.is_connected = False
                 raise  # Re-raise the exception to indicate connection failure
         elif self.source_type == "live" and self.is_connected:
-            logger.info("Deriv API client already connected.")
+            logger.debug("Deriv API client already connected.")  # Changed to debug
         elif self.source_type == "csv":
-            logger.info("Data source is CSV, no API connection needed.")
+            logger.debug(
+                "Data source is CSV, no API connection needed."
+            )  # Changed to debug
 
     async def disconnect(self):
         """
@@ -140,7 +142,7 @@ class DataProvider:
         if self.deriv_api and self.is_connected:
             await self.deriv_api.disconnect()
             self.is_connected = False
-            logger.info("Disconnected from Deriv API.")
+            logger.debug("Disconnected from Deriv API.")  # Changed to debug
 
     def __load_initial_csv_data(self) -> None:
         """
@@ -372,7 +374,9 @@ class DataProvider:
                 yielded_data_this_round
             ):  # Only yield if data was prepared for at least one timeframe
                 yield yielded_data_this_round
-                logger.info(f"Yielded CSV data ending at {current_master_time}")
+                logger.debug(
+                    f"Yielded CSV data ending at {current_master_time}"
+                )  # Changed to debug
             else:
                 logger.debug(
                     f"No new data to yield for any timeframe at {current_master_time}. Advancing master clock."
@@ -381,20 +385,20 @@ class DataProvider:
             # Advance the master clock for the next iteration
             current_master_time += master_step_interval
 
-        logger.info(
+        logger.debug(
             "CSV data stream finished: Reached end of available historical data."
-        )
+        )  # Changed to debug
 
-    async def __stream_live_data(
-        self,
-    ) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
+    async def __stream_live_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
         """
         Streams live data by querying the API, optimized with a master clock
         and intelligent polling based on timeframe frequencies.
         Only yields when new data is received for any timeframe.
         Uses dynamic sleep timing aligned with the next timeframe interval.
         """
-        logger.info("Starting live data stream with master clock...")
+        logger.debug(
+            "Starting live data stream with master clock..."
+        )  # Changed to debug
 
         # --- Initial Data Fetch Phase ---
         initial_fetch_successful = False
@@ -450,7 +454,7 @@ class DataProvider:
 
         # Yield the initially fetched data snapshot
         yield self.data_store.copy()
-        logger.info("Initial live data snapshot yielded.")
+        logger.debug("Initial live data snapshot yielded.")  # Changed to debug
 
         # Determine the smallest interval for the master clock step
         if not self.timeframes:
@@ -461,13 +465,17 @@ class DataProvider:
             self.timeframes, key=lambda tf: self.__get_timeframe_interval(tf)
         )
         master_step_interval = self.__get_timeframe_interval(sorted_timeframes[0])
-        logger.info(f"Master clock will advance by {master_step_interval}.")
+        logger.debug(
+            f"Master clock will advance by {master_step_interval}."
+        )  # Changed to debug
 
         # Align master clock to the next interval after the latest initial data
         latest_initial_data_end = max(self.last_fetched_time.values())
         current_master_time = latest_initial_data_end + master_step_interval
 
-        logger.info(f"Master clock initialized to: {current_master_time}.")
+        logger.debug(
+            f"Master clock initialized to: {current_master_time}."
+        )  # Changed to debug
 
         # --- Main Streaming Loop (Live Data) ---
         while True:
@@ -519,7 +527,7 @@ class DataProvider:
             # Only yield if we received new data for any timeframe
             if updated_any:
                 yield self.data_store.copy()
-                logger.info(
+                logger.debug(  # Changed to debug
                     f"Yielded live data snapshot at master time {current_master_time} "
                     f"(data updated)"
                 )
@@ -545,7 +553,7 @@ class DataProvider:
             sleep_duration = (target_wake_time - current_time).total_seconds()
             sleep_duration = max(0.01, sleep_duration)  # Ensure positive sleep duration
 
-            logger.debug(
+            logger.info(
                 f"Next candle closes at {next_interval_start}, "
                 f"targeting wake at {target_wake_time} "
                 f"(sleeping {sleep_duration:.3f}s)"
