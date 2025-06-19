@@ -100,13 +100,22 @@ strategy:
             - "M5.trend_macd.histogram < 0"
             - "price.close < price.open" # Additional bearish confirmation
       exits:
-        stop_loss:
-          method: "ATR"
-          indicator: "M5.trend_atr"
-          multiplier: 2.0
-        take_profits:
-          - { method: "risk_reward", ratio: 1.0, action: "partial_close", percent: 50 }
-          - { method: "risk_reward", ratio: 2.0, action: "full_close" }
+        BUY:
+          stop_loss:
+            method: "ATR"
+            indicator: "M5.trend_atr"
+            multiplier: 2.0
+          take_profit:
+            method: "risk_reward"
+            ratio: 2.0
+        SELL:
+          stop_loss:
+            method: "ATR"
+            indicator: "M5.trend_atr"
+            multiplier: 2.0
+          take_profit:
+            method: "risk_reward"
+            ratio: 2.0
 
     RANGING:
       entries:
@@ -131,36 +140,24 @@ strategy:
             - "price.close < price.high - ((price.high - price.low) * 0.6)" # Strong close in lower portion
             - "price.close < price.previous_close" # Lower than previous close
       exits:
-        stop_loss:
-          method: "ATR"
-          indicator: "M5.range_atr"
-          multiplier: 1.5
-        take_profits:
-          # Primary TP - Target the opposite end of the range with explicit references
-          - { 
-              method: "level", 
-              target: "explicit_level", 
-              buy_target: "M5.range_sr.R1",
-              sell_target: "M5.range_sr.S1",
-              action: "partial_close",
-              percent: 75
-            }
-          # Secondary TP - Based on risk-reward ratio as a backup
-          - { 
-              method: "risk_reward", 
-              ratio: 1.5, 
-              action: "full_close" 
-            }
-          # Mid-range TP for wide ranges with explicit condition
-          - { 
-              method: "level", 
-              target: "mid_level",
-              buy_target: "(price.entry + M5.range_sr.R1) / 2",
-              sell_target: "(price.entry + M5.range_sr.S1) / 2",
-              condition: "(M5.range_sr.R1 - M5.range_sr.S1) > (2.5 * M5.range_atr.value)",
-              action: "partial_close", 
-              percent: 50 
-            }
+        BUY:
+          stop_loss:
+            method: "ATR"
+            indicator: "M5.range_atr"
+            multiplier: 1.5
+          take_profit:
+            method: "level"
+            target: "resistance"
+            level: "M5.range_sr.R1"
+        SELL:
+          stop_loss:
+            method: "ATR"
+            indicator: "M5.range_atr"
+            multiplier: 1.5
+          take_profit:
+            method: "level"
+            target: "support"
+            level: "M5.range_sr.S1"
 
   # ----------------------------------------------------------------------------------
   # 4. RISK MANAGEMENT
@@ -181,6 +178,48 @@ strategy:
     
     # Drawdown Protection
     drawdown_protection:
+      daily_loss_limit:
+        enabled: true
+        percentage: 3.0  # Stop trading if daily loss exceeds 3% of account equity
+      weekly_loss_limit:
+        enabled: true
+        percentage: 5.0  # Stop trading if weekly loss exceeds 5% of account equity
+      monthly_loss_limit:
+        enabled: true
+        percentage: 10.0  # Stop trading if monthly loss exceeds 10% of account equity
+      max_consecutive_losses: 5  # Pause trading after 5 consecutive losses
+    
+    # Profit Taking & Trade Management
+    profit_management:
+      breakeven_move:
+        enabled: true
+        after_reward_ratio: 0.8  # Move SL to breakeven after price moves 0.8x the risk distance
+      trailing_stop:
+        method: "ATR"  # Options: ATR, fixed, percentage, indicator
+        activation: 1.0  # Activate trailing stop after 1.0x risk:reward
+        params: {
+          multiplier: 2.0,  # For ATR method: 2.0x ATR
+          indicator: "H1.trend_atr"  # Which ATR indicator to use
+        }
+    
+    # Time Filters
+    time_filters:
+      # Avoid trading during major news events
+      avoid_news: true
+      # Avoid trading during low liquidity periods
+      sessions:
+        - name: "Asian"
+          enabled: false  # Don't trade during Asian session
+          start_time: "00:00"
+          end_time: "08:00"
+        - name: "London"
+          enabled: true  # Allow trading during London session
+          start_time: "08:00"
+          end_time: "16:00"
+        - name: "New York"
+          enabled: true  # Allow trading during New York session
+          start_time: "13:00"
+          end_time: "21:00"
       daily_loss_limit:
         enabled: true
         percentage: 3.0  # Stop trading if daily loss exceeds 3% of account equity
