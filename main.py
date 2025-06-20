@@ -9,6 +9,7 @@ from src.utils.config import ConfigManager
 from src.core.data_provider import DataProvider
 from src.core.indicator_engine import IndicatorEngine
 from src.core.regime_detector import RegimeDetector
+from src.core.trading_logic import TradingLogicEngine
 
 
 async def main():
@@ -57,16 +58,11 @@ async def main():
                     f"Configured timeframes missing from indicators: {missing_timeframes}"
                 )
 
-        # Initialize indicator engine with the loaded config
-        logger.debug("Initializing indicator engine...")  # Changed to debug
+        # Initialize engines
+        logger.debug("Initializing engines...")  # Changed to debug
         indicator_engine = IndicatorEngine(config)
-        logger.debug(
-            f"Indicator definitions parsed: {len(indicator_engine.indicator_definitions)} timeframes"
-        )  # Changed to debug
-
-        # Initialize regime detector
-        logger.debug("Initializing regime detector...")  # Changed to debug
         regime_detector = RegimeDetector(config)
+        trading_logic_engine = TradingLogicEngine(config)
 
         if not config["live"]:
             logger.info("Backtesting. Loading historical data...")
@@ -108,6 +104,31 @@ async def main():
                     current_regime = regime_detector.detect_regime(indicators)
                     logger.info(f"Current market regime: {current_regime}")
 
+                    # Generate trading signals based on the detected regime
+                    signals = trading_logic_engine.generate_signals(
+                        current_regime, indicators, data_dict
+                    )
+
+                    # Log entry signals if any
+                    if signals["entry_signals"]:
+                        logger.info(
+                            f"Entry signals generated: {len(signals['entry_signals'])}"
+                        )
+                        for signal in signals["entry_signals"]:
+                            logger.info(
+                                f"  {signal['type']} signal at price {signal['price']}"
+                            )
+
+                    # Log exit signals if any
+                    if signals["exit_signals"]:
+                        logger.info(
+                            f"Exit levels calculated: {len(signals['exit_signals'])}"
+                        )
+                        for signal in signals["exit_signals"]:
+                            logger.info(
+                                f"  {signal['entry_signal_type']} - SL: {signal['stop_loss']}, TP: {signal['take_profit']}"
+                            )
+
                     # Log some indicator values for verification
                     logger.debug("Calculated indicators:")  # Changed to debug
                     for timeframe, indicators_dict in indicators.items():
@@ -122,8 +143,6 @@ async def main():
                             logger.debug(
                                 f"  {indicator_name}: {current_values}"
                             )  # Changed to debug
-
-                    # Here you would proceed with strategy execution using the detected regime
 
             except Exception as e:
                 logger.error(f"Error during csv data stream: {e}")
@@ -162,6 +181,31 @@ async def main():
                     current_regime = regime_detector.detect_regime(indicators)
                     logger.info(f"Current market regime (live): {current_regime}")
 
+                    # Generate trading signals based on the detected regime
+                    signals = trading_logic_engine.generate_signals(
+                        current_regime, indicators, data_dict
+                    )
+
+                    # Log entry signals if any
+                    if signals["entry_signals"]:
+                        logger.info(
+                            f"Entry signals generated: {len(signals['entry_signals'])}"
+                        )
+                        for signal in signals["entry_signals"]:
+                            logger.info(
+                                f"  {signal['type']} signal at price {signal['price']}"
+                            )
+
+                    # Log exit signals if any
+                    if signals["exit_signals"]:
+                        logger.info(
+                            f"Exit levels calculated: {len(signals['exit_signals'])}"
+                        )
+                        for signal in signals["exit_signals"]:
+                            logger.info(
+                                f"  {signal['entry_signal_type']} - SL: {signal['stop_loss']}, TP: {signal['take_profit']}"
+                            )
+
                     # Log some indicator values for verification
                     logger.debug("Calculated indicators (live):")  # Changed to debug
                     for timeframe, indicators_dict in indicators.items():
@@ -176,8 +220,6 @@ async def main():
                             logger.debug(
                                 f"  {indicator_name}: {current_values}"
                             )  # Changed to debug
-
-                    # Here you would proceed with strategy execution using the detected regime
 
             except Exception as e:
                 logger.error(f"Error during live data stream: {e}")
