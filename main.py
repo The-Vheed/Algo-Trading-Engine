@@ -12,16 +12,63 @@ from src.core.regime_detector import RegimeDetector
 from src.core.trading_logic import TradingLogicEngine
 
 
+def load_trading_api(config):
+    """
+    Load the appropriate trading API based on configuration.
+
+    Args:
+        config (dict): Configuration dictionary
+
+    Returns:
+        Trading API object or None if not configured for live trading
+    """
+    if not config.get("live", False):
+        return None
+
+    trading_api_config = config.get("trading_api", {})
+    api_type = trading_api_config.get("type", "").lower()
+
+    if api_type == "mt5_fastapi":
+        from src.core.trading_apis.mt5_fastapi import MT5FastAPI
+
+        api_config = trading_api_config.get("config", {})
+        return MT5FastAPI(
+            base_url=api_config.get("base_url", "http://127.0.0.1:8000"),
+            access_key=api_config.get("access_key", ""),
+        )
+    # Future APIs can be added here
+    # elif api_type == "deriv":
+    #     from src.core.trading_apis.deriv_api import DerivAPI
+    #     return DerivAPI(...)
+    else:
+        logger.warning(f"Unknown trading API type: {api_type}. Using default.")
+        return None
+
+
 async def main():
     # Initialize configuration managers
     logger.info("Starting Trading System")
-    logger.debug(f"Loading configs...")  # Changed to debug
+    logger.debug(f"Loading configs...")
 
     # Variable to track any resources that need cleanup
     live_provider = None
+    trading_api = None
 
     try:
         config = ConfigManager.load_config("config/main.yaml")
+
+        # Load trading API if configured for live trading
+        trading_api = load_trading_api(config)
+        if config.get("live", False) and trading_api:
+            logger.info(f"Loaded trading API: {type(trading_api).__name__}")
+        elif config.get("live", False):
+            logger.warning("Live trading enabled but no trading API configured")
+
+        # Extract symbols from config file
+        configured_symbols = config.get("strategy", {}).get("symbols", [])
+        if not configured_symbols:
+            logger.error("No symbols defined in the config file")
+            return
 
         # Extract timeframes from config file
         configured_timeframes = config.get("strategy", {}).get("timeframes", [])
@@ -29,16 +76,13 @@ async def main():
             logger.error("No timeframes defined in the config file")
             return
 
-        logger.debug(
-            f"Using timeframes from config: {configured_timeframes}"
-        )  # Changed to debug
+        logger.debug(f"Using timeframes from config: {configured_timeframes}")
 
-        # Prepare count values for each timeframe (using the same count for all timeframes)
-        # This can be enhanced to have different counts per timeframe if needed
-        default_data_count = 500  # Default count of candles to fetch per timeframe
+        # Prepare count values for each timeframe
+        default_data_count = 500
         timeframe_counts = [default_data_count] * len(configured_timeframes)
 
-        # Validate that indicator timeframes match the configured timeframes
+        # Validate indicator timeframes
         indicator_timeframes = set(
             config.get("strategy", {}).get("indicators", {}).keys()
         )
@@ -59,7 +103,7 @@ async def main():
                 )
 
         # Initialize engines
-        logger.debug("Initializing engines...")  # Changed to debug
+        logger.debug("Initializing engines...")
         indicator_engine = IndicatorEngine(config)
         regime_detector = RegimeDetector(config)
         trading_logic_engine = TradingLogicEngine(config)
@@ -67,22 +111,13 @@ async def main():
         if not config["live"]:
             logger.info("Backtesting. Loading historical data...")
             try:
-                if config["backtesting"]["data_source"] == "CSV":
-                    csv_provider = DataProvider(
-                        source_type="csv",
-                        base_path="data/historical",
-                        symbol="EURUSD",
-                        timeframes=configured_timeframes,
-                        counts=timeframe_counts,
-                    )
-                else:
-                    csv_provider = DataProvider(
-                        source_type="csv",
-                        base_path="data/historical",
-                        symbol="EURUSD",
-                        timeframes=configured_timeframes,
-                        counts=timeframe_counts,
-                    )
+                csv_provider = DataProvider(
+                    source_type="csv",
+                    base_path="data/historical",
+                    symbol=configured_symbols[0],
+                    timeframes=configured_timeframes,
+                    counts=timeframe_counts,
+                )
 
                 csv_stream = csv_provider.stream_data()
                 async for data_dict in csv_stream:
@@ -119,7 +154,6 @@ async def main():
                                 f"  {signal['type']} signal at price {signal['price']}"
                             )
 
-                    # Log exit signals if any
                     if signals["exit_signals"]:
                         logger.info(
                             f"Exit levels calculated: {len(signals['exit_signals'])}"
@@ -129,20 +163,16 @@ async def main():
                                 f"  {signal['entry_signal_type']} - SL: {signal['stop_loss']}, TP: {signal['take_profit']}"
                             )
 
-                    # Log some indicator values for verification
-                    logger.debug("Calculated indicators:")  # Changed to debug
+                    logger.debug("Calculated indicators:")
                     for timeframe, indicators_dict in indicators.items():
-                        logger.debug(f"Timeframe: {timeframe}")  # Changed to debug
+                        logger.debug(f"Timeframe: {timeframe}")
                         for indicator_name, indicator_values in indicators_dict.items():
-                            # Format indicator values for logging (just the current values, not the series)
                             current_values = {
                                 k: v
                                 for k, v in indicator_values.items()
                                 if k != "series"
                             }
-                            logger.debug(
-                                f"  {indicator_name}: {current_values}"
-                            )  # Changed to debug
+                            logger.debug(f"  {indicator_name}: {current_values}")
 
             except Exception as e:
                 logger.error(f"Error during csv data stream: {e}")
@@ -154,9 +184,8 @@ async def main():
             try:
                 live_provider = DataProvider(
                     source_type="live",
-                    app_id=config["api"]["app_id"],
-                    api_key=config["api"]["key"],
-                    symbol="R_25",
+                    trading_api=trading_api,  # Pass the trading API object
+                    symbol=configured_symbols[0],
                     timeframes=configured_timeframes,
                     counts=timeframe_counts,
                 )
@@ -169,24 +198,18 @@ async def main():
                             f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
                             + str(df.tail(1))
                         )
-                        # Assert length is correct for csv data as well
                         assert (
                             len(df) == live_provider.counts[tf]
                         ), f"Live yielded {tf} data has length {len(df)}, expected {live_provider.counts[tf]}"
 
-                    # Calculate indicators from the live data snapshot
                     indicators = indicator_engine.calculate_indicators(data_dict)
-
-                    # Detect market regime
                     current_regime = regime_detector.detect_regime(indicators)
                     logger.info(f"Current market regime (live): {current_regime}")
 
-                    # Generate trading signals based on the detected regime
                     signals = trading_logic_engine.generate_signals(
                         current_regime, indicators, data_dict
                     )
 
-                    # Log entry signals if any
                     if signals["entry_signals"]:
                         logger.info(
                             f"Entry signals generated: {len(signals['entry_signals'])}"
@@ -196,7 +219,6 @@ async def main():
                                 f"  {signal['type']} signal at price {signal['price']}"
                             )
 
-                    # Log exit signals if any
                     if signals["exit_signals"]:
                         logger.info(
                             f"Exit levels calculated: {len(signals['exit_signals'])}"
@@ -206,20 +228,16 @@ async def main():
                                 f"  {signal['entry_signal_type']} - SL: {signal['stop_loss']}, TP: {signal['take_profit']}"
                             )
 
-                    # Log some indicator values for verification
-                    logger.debug("Calculated indicators (live):")  # Changed to debug
+                    logger.debug("Calculated indicators (live):")
                     for timeframe, indicators_dict in indicators.items():
-                        logger.debug(f"Timeframe: {timeframe}")  # Changed to debug
+                        logger.debug(f"Timeframe: {timeframe}")
                         for indicator_name, indicator_values in indicators_dict.items():
-                            # Format indicator values for logging (just the current values, not the series)
                             current_values = {
                                 k: v
                                 for k, v in indicator_values.items()
                                 if k != "series"
                             }
-                            logger.debug(
-                                f"  {indicator_name}: {current_values}"
-                            )  # Changed to debug
+                            logger.debug(f"  {indicator_name}: {current_values}")
 
             except Exception as e:
                 logger.error(f"Error during live data stream: {e}")
@@ -227,16 +245,12 @@ async def main():
 
                 traceback.print_exc()
             finally:
-                # Ensure we disconnect properly
                 if live_provider and hasattr(live_provider, "disconnect"):
                     await live_provider.disconnect()
-                    logger.debug(
-                        "Disconnected from live data provider."
-                    )  # Changed to debug
+                    logger.debug("Disconnected from live data provider.")
 
     except KeyboardInterrupt:
         logger.info("\nKeyboard interrupt detected. Shutting down gracefully...")
-        # Make sure to disconnect if using live provider
         if live_provider and hasattr(live_provider, "disconnect"):
             await live_provider.disconnect()
             logger.info("Disconnected from live data provider.")

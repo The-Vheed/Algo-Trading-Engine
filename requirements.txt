@@ -3,6 +3,8 @@ numpy
 pyyaml
 pytest
 setuptools
+requests
+aiohttp
 
 python-deriv-api
 # pandas_ta

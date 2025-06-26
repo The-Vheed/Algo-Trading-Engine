@@ -8,11 +8,12 @@ import time
 import asyncio
 import pandas as pd
 from pandas import DataFrame
-from typing import List, Dict, Union, AsyncGenerator, Generator, Tuple, Optional
+from typing import List, Dict, Union, AsyncGenerator, Generator, Tuple, Optional, Any
 from pandas import DataFrame, Series, concat
 from datetime import datetime, timedelta
 
-from deriv_api import DerivAPI
+# Remove deriv_api import
+# from deriv_api import DerivAPI
 
 
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
@@ -31,8 +32,7 @@ class DataProvider:
         symbol: str = "EURUSD",
         timeframes: List[str] = ["H1", "H4"],
         counts: List[int] = [1250, 500],
-        api_key: str = "",
-        app_id: int = 1089,  # Default to 1089 for testing if not provided
+        trading_api: Optional[object] = None,  # Trading API object (MT5FastAPI, etc.)
         base_path: str = "",
         timeout: int = 30,
         retries: int = 3,
@@ -47,9 +47,7 @@ class DataProvider:
             symbol (str): The trading symbol (e.g., "EURUSD").
             timeframes (List[str]): List of timeframes to load/stream (e.g., ["H1", "H4"]).
             counts (List[int]): List of historical data counts corresponding to timeframes.
-                                e.g., [1250, 500] for ["H1", "H4"].
-            api_key (str): API key for live data access.
-            app_id (int): Application ID for live data access. Defaults to 1089.
+            trading_api (Optional[object]): Trading API object for live data (MT5FastAPI, etc.)
             base_path (str): Base path for CSV files (required for 'csv' source_type).
             timeout (int): API request timeout in seconds.
             retries (int): Number of retries for API requests.
@@ -66,25 +64,17 @@ class DataProvider:
         self.symbol = symbol
         self.timeframes = timeframes
         self.counts = dict(zip(timeframes, counts))  # Map timeframe to its count
-        self.api_key = api_key
-        self.app_id = app_id
+        self.trading_api = trading_api
         self.timeout = timeout
         self.retries = retries
         self.initial_fetch_timeout = initial_fetch_timeout
         self.live_polling_interval = live_polling_interval
 
-        self.deriv_api: Optional[DerivAPI] = None  # Will be set in connect()
         self.is_connected: bool = False  # Track connection status
 
-        self.data_store: Dict[str, pd.DataFrame] = (
-            {}
-        )  # Internal store for current data views
-        self.last_fetched_time: Dict[str, datetime] = (
-            {}
-        )  # Track last data point fetched for each TF
-        self.next_fetch_time: Dict[str, datetime] = (
-            {}
-        )  # Next allowed fetch time for live data
+        self.data_store: Dict[str, pd.DataFrame] = {}
+        self.last_fetched_time: Dict[str, datetime] = {}
+        self.next_fetch_time: Dict[str, datetime] = {}
 
         if self.source_type == "csv":
             self.base_path = base_path
@@ -92,57 +82,47 @@ class DataProvider:
                 raise ValueError(
                     f"For 'csv' source_type, 'base_path' must be a valid directory. Got: {base_path}"
                 )
-            self.__load_initial_csv_data()  # Assuming this is a synchronous method
+            self.__load_initial_csv_data()
+        elif self.source_type == "live" and not trading_api:
+            raise ValueError("trading_api must be provided for live data source")
 
     async def connect(self):
         """
-        Connects to the Deriv API and authorizes the client if source_type is 'live'.
-        This method should be called asynchronously before fetching live data.
+        Connects to the trading API if source_type is 'live'.
         """
         if self.source_type == "live" and not self.is_connected:
-            logger.debug(f"Initializing Deriv API client with endpoint")
+            logger.debug("Connecting to trading API...")
 
             try:
-                self.deriv_api = DerivAPI(app_id=self.app_id, timeout=10)
-                authorize_response = await self.deriv_api.authorize(self.api_key)
-
-                if not authorize_response or authorize_response.get("error"):
-                    error_message = authorize_response.get("error", {}).get(
-                        "message", "Unknown authorization error"
-                    )
-                    raise RuntimeError(
-                        f"Failed to authorize with Deriv API. Error: {error_message}"
-                    )
+                if hasattr(self.trading_api, "connect"):
+                    connection_success = await self.trading_api.connect()
+                    if not connection_success:
+                        raise RuntimeError("Failed to connect to trading API")
 
                 self.is_connected = True
-                logger.info(
-                    f"Deriv API client authorized for account: {authorize_response['authorize']['loginid']}"
-                )
+                logger.info("Trading API connected successfully")
 
                 # Initialize next_fetch_time to allow immediate fetch
                 for tf in self.timeframes:
-                    self.next_fetch_time[tf] = datetime.min  # Allow immediate fetch
+                    self.next_fetch_time[tf] = datetime.min
             except Exception as e:
-                logger.error(f"Failed to connect and authorize Deriv API: {e}")
-                if self.deriv_api:
-                    await self.deriv_api.disconnect()
+                logger.error(f"Failed to connect to trading API: {e}")
                 self.is_connected = False
-                raise  # Re-raise the exception to indicate connection failure
+                raise
         elif self.source_type == "live" and self.is_connected:
-            logger.debug("Deriv API client already connected.")  # Changed to debug
+            logger.debug("Trading API already connected.")
         elif self.source_type == "csv":
-            logger.debug(
-                "Data source is CSV, no API connection needed."
-            )  # Changed to debug
+            logger.debug("Data source is CSV, no API connection needed.")
 
     async def disconnect(self):
         """
-        Disconnects the Deriv API client if it's connected.
+        Disconnects the trading API if it's connected.
         """
-        if self.deriv_api and self.is_connected:
-            await self.deriv_api.disconnect()
+        if self.trading_api and self.is_connected:
+            if hasattr(self.trading_api, "disconnect"):
+                await self.trading_api.disconnect()
             self.is_connected = False
-            logger.debug("Disconnected from Deriv API.")  # Changed to debug
+            logger.debug("Disconnected from trading API.")
 
     def __load_initial_csv_data(self) -> None:
         """
@@ -391,14 +371,9 @@ class DataProvider:
 
     async def __stream_live_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
         """
-        Streams live data by querying the API, optimized with a master clock
-        and intelligent polling based on timeframe frequencies.
-        Only yields when new data is received for any timeframe.
-        Uses dynamic sleep timing aligned with the next timeframe interval.
+        Streams live data by querying the trading API.
         """
-        logger.debug(
-            "Starting live data stream with master clock..."
-        )  # Changed to debug
+        logger.debug("Starting live data stream...")
 
         # --- Initial Data Fetch Phase ---
         initial_fetch_successful = False
@@ -406,7 +381,7 @@ class DataProvider:
 
         while time.time() - fetch_start_time < self.initial_fetch_timeout:
             try:
-                initial_data = await self.__fetch_data_from_api(
+                initial_data = await self.__fetch_data_from_trading_api(
                     self.symbol, self.timeframes, self.counts
                 )
 
@@ -429,23 +404,23 @@ class DataProvider:
                         self.next_fetch_time[tf] = (
                             df.index.max() + self.__get_timeframe_interval(tf)
                         )
-                        logger.info(
+                        logger.debug(
                             f"Initialized {tf} data ending at {self.last_fetched_time[tf]}"
                         )
                     initial_fetch_successful = True
-                    logger.info("All initial live data fetches complete.")
+                    logger.debug("All initial live data fetches complete.")
                     break
                 else:
                     logger.warning(
                         "Not all timeframes ready after initial fetch. Retrying..."
                     )
-                    time.sleep(self.live_polling_interval)
+                    await asyncio.sleep(self.live_polling_interval)
 
             except Exception as e:
                 logger.warning(
                     f"Initial live data fetch failed: {e}. Retrying in {self.live_polling_interval}s..."
                 )
-                time.sleep(self.live_polling_interval)
+                await asyncio.sleep(self.live_polling_interval)
 
         if not initial_fetch_successful:
             raise RuntimeError(
@@ -454,7 +429,7 @@ class DataProvider:
 
         # Yield the initially fetched data snapshot
         yield self.data_store.copy()
-        logger.debug("Initial live data snapshot yielded.")  # Changed to debug
+        logger.debug("Initial live data snapshot yielded.")
 
         # Determine the smallest interval for the master clock step
         if not self.timeframes:
@@ -465,37 +440,32 @@ class DataProvider:
             self.timeframes, key=lambda tf: self.__get_timeframe_interval(tf)
         )
         master_step_interval = self.__get_timeframe_interval(sorted_timeframes[0])
-        logger.debug(
-            f"Master clock will advance by {master_step_interval}."
-        )  # Changed to debug
 
-        # Align master clock to the next interval after the latest initial data
         latest_initial_data_end = max(self.last_fetched_time.values())
         current_master_time = latest_initial_data_end + master_step_interval
 
-        logger.debug(
-            f"Master clock initialized to: {current_master_time}."
-        )  # Changed to debug
-
-        # --- Main Streaming Loop (Live Data) ---
         while True:
-            current_system_time = datetime.now()
             updated_any = False
 
             for tf in sorted_timeframes:
                 interval = self.__get_timeframe_interval(tf)
                 required_count = self.counts[tf]
 
-                # Only fetch if master clock has reached or passed the next fetch time for this TF
                 if current_master_time >= self.next_fetch_time[tf]:
                     try:
-                        new_data = await self.__fetch_data_from_api_for_timeframe(
-                            self.symbol, tf, required_count
+                        new_data = (
+                            await self.__fetch_data_from_trading_api_for_timeframe(
+                                self.symbol, tf, required_count
+                            )
                         )
 
                         if not new_data.empty:
                             new_data_max_time = new_data.index.max()
                             last_fetched_dt = self.last_fetched_time.get(tf)
+
+                            logger.debug(
+                                f"Data for {tf}. Latest bar ends at: {new_data_max_time}"
+                            )
 
                             if (
                                 last_fetched_dt is None
@@ -506,52 +476,35 @@ class DataProvider:
                                     tf
                                 ].index.max()
                                 updated_any = True
-                                logger.debug(
-                                    f"New data for {tf}. Latest bar ends at: {new_data_max_time}"
-                                )
-                            else:
-                                logger.debug(
-                                    f"No newer data from API for {tf}. "
-                                    f"Latest: {new_data_max_time}. Existing: {last_fetched_dt}"
-                                )
                         else:
-                            logger.debug(
-                                f"API returned empty DataFrame for {tf}. No new data."
-                            )
+                            logger.debug(f"No new data available for {tf}")
                     except Exception as e:
                         logger.error(f"Error fetching live data for {tf}: {e}")
 
-                    # Update next_fetch_time for this TF
                     self.next_fetch_time[tf] = self.next_fetch_time[tf] + interval
 
-            # Only yield if we received new data for any timeframe
             if updated_any:
                 yield self.data_store.copy()
-                logger.debug(  # Changed to debug
-                    f"Yielded live data snapshot at master time {current_master_time} "
-                    f"(data updated)"
+                logger.debug(
+                    f"Yielded live data snapshot at master time {current_master_time}"
                 )
 
-            # Advance master clock by one interval
             current_master_time += master_step_interval
 
-            # Calculate precise sleep timing to wake up 0.25s after next candlestick closes
+            # Calculate sleep duration
             current_time = datetime.now()
             smallest_tf = sorted_timeframes[0]
             smallest_interval = self.__get_timeframe_interval(smallest_tf)
 
-            # Round current time down to the nearest interval
             current_time_ts = current_time.timestamp()
             interval_seconds = smallest_interval.total_seconds()
             rounded_ts = (current_time_ts // interval_seconds) * interval_seconds
 
-            # Calculate next interval start and add 5s delay for data availability
             next_interval_start = datetime.fromtimestamp(rounded_ts + interval_seconds)
-            target_wake_time = next_interval_start + timedelta(seconds=5)
+            target_wake_time = next_interval_start + timedelta(seconds=0.5)
 
-            # Calculate sleep duration to reach target wake time
             sleep_duration = (target_wake_time - current_time).total_seconds()
-            sleep_duration = max(0.01, sleep_duration)  # Ensure positive sleep duration
+            sleep_duration = max(0.01, sleep_duration)
 
             logger.info(
                 f"Next candle closes at {next_interval_start}, "
@@ -560,155 +513,124 @@ class DataProvider:
             )
             await asyncio.sleep(sleep_duration)
 
-    async def __fetch_data_from_api(
+    def _parse_timestamps(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Parse timestamps in DataFrame.
+        Centralizes all timestamp conversion in one place to ensure consistency.
+
+        Args:
+            df: DataFrame with potential timestamp data
+
+        Returns:
+            DataFrame with properly parsed timestamps
+        """
+        if df is None or df.empty:
+            return df
+
+        # Handle the Time column - this is our actual timestamp data
+        if "Time" in df.columns:
+            try:
+                # Convert Time column to datetime objects if it contains numeric timestamps
+                if not pd.api.types.is_datetime64_any_dtype(df["Time"]):
+                    df["Time"] = df["Time"].apply(
+                        lambda x: (
+                            datetime.fromtimestamp(x)
+                            if isinstance(x, (int, float))
+                            else x
+                        )
+                    )
+                    logger.debug("Converted 'Time' column to datetime objects")
+
+                # Set the Time column as the index
+                df = df.set_index("Time")
+                df.index.name = "Date"  # Rename index for consistency
+                logger.debug("Set 'Time' column as DataFrame index with name 'Date'")
+            except Exception as e:
+                logger.warning(f"Failed to process Time column: {e}")
+
+        return df
+
+    async def __fetch_data_from_trading_api(
         self, symbol: str, timeframes: List[str], counts: Dict[str, int]
     ) -> Dict[str, pd.DataFrame]:
         """
-        Fetches initial batch of historical OHLC (candle) data for all specified timeframes
-        from the Deriv API using the 'candles' call.
-
-        Args:
-            symbol (str): The trading symbol (e.g., 'R_100').
-            timeframes (List[str]): A list of timeframe strings (e.g., ['1m', '5m', '1h']).
-            counts (Dict[str, int]): A dictionary mapping timeframe to the number of candles to fetch.
-
-        Returns:
-            Dict[str, pd.DataFrame]: A dictionary where keys are timeframes and values are pandas DataFrames
-                                     containing 'Open', 'High', 'Low', 'Close' data.
-                                     'Volume' is not provided by Deriv's candles API and will be omitted.
+        Fetch initial batch of historical price data for all timeframes using the trading API.
         """
-        # logger.info(f"API: Fetching initial OHLC data for {symbol} on {timeframes}...")
+        try:
+            # Convert counts dict to a single count (use max for initial fetch)
+            max_count = max(counts.values())
 
-        # Ensure any previous subscriptions are cleared
-        await self.deriv_api.send({"forget_all": "candles"})
-        self.deriv_api
+            logger.debug(
+                f"Fetching data for symbol: {symbol}, timeframes: {timeframes}, count: {max_count}"
+            )
 
-        all_timeframe_data = {}
-        for tf in timeframes:
-            num_records = counts.get(tf, 100)  # Default to 100 if not specified
-            granularity = self.__get_timeframe_interval(tf).seconds
-            request = {
-                "ticks_history": symbol,
-                "count": num_records,
-                "granularity": granularity,
-                "end": "latest",
-                "style": "candles",
-            }
+            # The trading API now returns parsed response with DataFrames
+            response = await self.trading_api.get_price_data(
+                symbol=symbol, timeframes=timeframes, count=max_count
+            )
 
-            try:
-                response = await asyncio.wait_for(
-                    self.deriv_api.send(request), timeout=10
+            logger.debug(
+                f"API response keys: {response.keys() if response else 'None'}"
+            )
+
+            all_timeframe_data = {}
+            if response and "data" in response:
+                logger.debug(
+                    f"Available timeframes in response: {list(response['data'].keys())}"
                 )
-                if (
-                    response
-                    and response.get("msg_type") == "candles"
-                    and response.get("candles")
-                ):
-                    ohlc_data = response["candles"]
-                    # Create DataFrame
-                    df = pd.DataFrame(ohlc_data)
-                    df["Date"] = pd.to_datetime(df["epoch"], unit="s")
-                    df = df.set_index("Date")
-                    df = df[["open", "high", "low", "close"]].astype(float)
-                    df.columns = [
-                        "Open",
-                        "High",
-                        "Low",
-                        "Close",
-                    ]  # Rename columns for consistency
-                    df.index.name = "Date"
+                for tf in timeframes:
+                    if tf in response["data"]:
+                        df = response["data"][tf]  # Already a DataFrame
+                        if isinstance(df, pd.DataFrame) and not df.empty:
+                            # Use the centralized timestamp parser
+                            df = self._parse_timestamps(df)
 
-                    # self.validate_data(df, tf) # Assuming validate_data exists and handles OHLC structure
-                    all_timeframe_data[tf] = df
-                    # logger.debug(
-                    #     f"API: Fetched {len(df)} OHLC records for {tf} ending at {df.index.max()}"
-                    # )
-                elif response and response.get("error"):
-                    logger.error(
-                        f"Error fetching candles for {symbol}/{tf}: {response['error']['message']}"
-                    )
-                else:
-                    logger.warning(
-                        f"No OHLC data found for {symbol}/{tf} or unexpected response."
-                    )
-            except TimeoutError:
-                logger.error(
-                    f"Timeout while fetching candles for {symbol}/{tf}. "
-                    f"Check your connection or API limits."
-                )
-                return pd.DataFrame()
-            except Exception as e:
-                logger.error(f"An error occurred while fetching {symbol}/{tf}: {e}")
-        return all_timeframe_data
+                            # Trim to requested count for this timeframe
+                            required_count = counts.get(tf, max_count)
+                            df = df.iloc[-required_count:]
+                            all_timeframe_data[tf] = df
+                            logger.debug(
+                                f"Successfully processed {len(df)} records for {tf}"
+                            )
+                        else:
+                            logger.warning(f"Empty or invalid DataFrame for {tf}")
+                    else:
+                        logger.warning(f"Timeframe {tf} not found in API response")
+            else:
+                logger.error(f"Invalid API response format: {response}")
 
-    async def __fetch_data_from_api_for_timeframe(
+            return all_timeframe_data
+        except Exception as e:
+            logger.error(f"Error fetching data from trading API: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return {}
+
+    async def __fetch_data_from_trading_api_for_timeframe(
         self, symbol: str, timeframe: str, count: int
     ) -> pd.DataFrame:
         """
-        Fetches the latest 'count' OHLC (candle) data for a specific timeframe
-        from the Deriv API using the 'candles' call.
-
-        Args:
-            symbol (str): The trading symbol (e.g., 'R_100').
-            timeframe (str): The timeframe string (e.g., '1m', '1h').
-            count (int): The number of candles to fetch.
-
-        Returns:
-            pd.DataFrame: A pandas DataFrame containing 'Open', 'High', 'Low', 'Close' data.
-                          'Volume' is not provided by Deriv's candles API and will be omitted.
+        Fetch latest price data for a specific timeframe using the trading API.
         """
-        # logger.debug(
-        #     f"API: Fetching {count} latest OHLC candles for {symbol}/{timeframe}..."
-        # )
-
-        granularity = self.__get_timeframe_interval(timeframe).seconds
-
-        request = {
-            "ticks_history": symbol,
-            "count": count,
-            "granularity": granularity,
-            "end": "latest",
-            "style": "candles",
-        }
-
         try:
-            response = await asyncio.wait_for(self.deriv_api.send(request), timeout=10)
-            if (
-                response
-                and response.get("msg_type") == "candles"
-                and response.get("candles")
-            ):
-                ohlc_data = response["candles"]
-                df = pd.DataFrame(ohlc_data)
-                df["Date"] = pd.to_datetime(df["epoch"], unit="s")
-                df = df.set_index("Date")
-                df = df[["open", "high", "low", "close"]].astype(float)
-                df.columns = ["Open", "High", "Low", "Close"]
-                df.index.name = "Date"
-
-                # self.validate_data(df, timeframe) # Assuming validate_data exists and handles OHLC structure
-                # logger.debug(
-                #     f"API: Fetched {len(df)} OHLC records for {timeframe} ending at {df.index.max()}"
-                # )
-                return df
-            elif response and response.get("error"):
-                logger.error(
-                    f"Error fetching candles for {symbol}/{timeframe}: {response['error']['message']}"
-                )
-                return pd.DataFrame()  # Return empty DataFrame on error
-            else:
-                logger.warning(
-                    f"No OHLC data found for {symbol}/{timeframe} or unexpected response."
-                )
-                return (
-                    pd.DataFrame()
-                )  # Return empty DataFrame if no data or unexpected response
-        except TimeoutError:
-            logger.error(
-                f"Timeout while fetching candles for {symbol}/{timeframe}. "
-                f"Check your connection or API limits."
+            # The trading API now returns parsed response with DataFrames
+            response = await self.trading_api.get_price_data(
+                symbol=symbol, timeframes=[timeframe], count=count
             )
+
+            if response and "data" in response and timeframe in response["data"]:
+                df = response["data"][timeframe]  # Already a DataFrame
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    # Use the centralized timestamp parser
+                    df = self._parse_timestamps(df)
+                    return df
+                else:
+                    logger.warning(
+                        f"Expected DataFrame for {timeframe}, got {type(df)}"
+                    )
+
             return pd.DataFrame()
         except Exception as e:
-            logger.error(f"An error occurred while fetching {symbol}/{timeframe}: {e}")
-            return pd.DataFrame()  # Return empty DataFrame on exception
+            logger.error(f"Error fetching {timeframe} data from trading API: {e}")
+            return pd.DataFrame()

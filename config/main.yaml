@@ -8,6 +8,13 @@ api:
   key: "XtejxmiwNHZqDFk"
   app_id: "80720"
 
+# Trading API Configuration
+trading_api:
+  type: "mt5_fastapi"  # Options: mt5_fastapi, deriv, etc.
+  config:
+    base_url: "http://192.168.0.164:8000"
+    access_key: "e86f80f6-b69d-5593-b9a6-0b1d8df45a2d"
+
 backtesting:
   start_date: "2020-01-01"
   end_date: "2024-12-31"
@@ -21,7 +28,7 @@ backtesting:
 strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
-  instruments: ["EUR/USD"]
+  symbols: ["EURUSD"]
   timeframes: ["M1", "M5"]
 
   # ----------------------------------------------------------------------------------
@@ -103,7 +110,7 @@ strategy:
         BUY:
           stop_loss:
             method: "ATR"
-            indicator: "M5.trend_atr"
+            indicator: "M5.trend_atr.value"
             multiplier: 2.0
           take_profit:
             method: "risk_reward"
@@ -111,7 +118,7 @@ strategy:
         SELL:
           stop_loss:
             method: "ATR"
-            indicator: "M5.trend_atr"
+            indicator: "M5.trend_atr.value"
             multiplier: 2.0
           take_profit:
             method: "risk_reward"
