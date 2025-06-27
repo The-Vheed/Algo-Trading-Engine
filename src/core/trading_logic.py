@@ -1,6 +1,7 @@
 import pandas as pd
 from typing import Dict, List, Any, Optional, Tuple
 from src.utils.logger import Logger
+from datetime import datetime, timedelta
 
 logger = Logger(__name__)
 
@@ -60,7 +61,7 @@ class TradingLogicEngine:
         # Get trading logic for the current regime
         regime_logic = self.trading_logic.get(regime)
         if not regime_logic:
-            logger.warning(f"No trading logic defined for regime: {regime}")
+            logger.debug(f"No trading logic defined for regime: {regime}")
             return result
 
         # Check entry conditions for BUY and SELL
@@ -104,33 +105,46 @@ class TradingLogicEngine:
         # Get entry conditions from regime logic
         entries = regime_logic.get("entries", {})
 
+        # Current time for all signals in this cycle
+        # current_time = pd.Timestamp.now()
+
         # Check BUY conditions
         buy_conditions = entries.get("BUY", {}).get("conditions", [])
         if buy_conditions and self._evaluate_conditions(
             buy_conditions, indicator_data, price_data
         ):
+            current_price, current_time = self._get_current_price_and_time(
+                price_data, "close"
+            )
             entry_signals.append(
                 {
                     "type": "BUY",
-                    "timestamp": pd.Timestamp.now(),
-                    "price": self._get_current_price(price_data, "close"),
+                    "timestamp": current_time,
+                    "price": current_price,
                 }
             )
-            logger.info(f"BUY signal generated at price {entry_signals[-1]['price']}")
+            logger.info(
+                f"BUY signal generated at time {current_time} price {current_price}"
+            )
 
         # Check SELL conditions
         sell_conditions = entries.get("SELL", {}).get("conditions", [])
         if sell_conditions and self._evaluate_conditions(
             sell_conditions, indicator_data, price_data
         ):
+            current_price, current_time = self._get_current_price_and_time(
+                price_data, "close"
+            )
             entry_signals.append(
                 {
                     "type": "SELL",
-                    "timestamp": pd.Timestamp.now(),
-                    "price": self._get_current_price(price_data, "close"),
+                    "timestamp": current_time,
+                    "price": current_price,
                 }
             )
-            logger.info(f"SELL signal generated at price {entry_signals[-1]['price']}")
+            logger.info(
+                f"SELL signal generated at time {current_time} price {current_price}"
+            )
 
         return entry_signals
 
@@ -520,14 +534,34 @@ class TradingLogicEngine:
 
         return condition
 
-    def _get_current_price(
+    def __get_timeframe_interval(self, tf: str) -> timedelta:
+        """Helper to convert timeframe string to timedelta for live polling."""
+        if tf.startswith("S"):
+            return timedelta(seconds=int(tf[1:]))
+        elif tf.startswith("M"):
+            return timedelta(minutes=int(tf[1:]))
+        elif tf.startswith("H"):
+            return timedelta(hours=int(tf[1:]))
+        elif tf.startswith("D"):
+            return timedelta(days=int(tf[1:]))
+        # Add more as needed for other timeframes (W, M etc.)
+        else:
+            raise ValueError(f"Unsupported timeframe format: {tf}")
+
+    def _get_current_price_and_time(
         self, price_data: Dict[str, pd.DataFrame], price_type: str = "close"
-    ) -> float:
+    ) -> Tuple[float, pd.Timestamp]:
         """
         Get the current price from the price data.
         """
         # Use the smallest timeframe for price data (assuming it's the most recent)
-        timeframe = min(price_data.keys()) if price_data else None
+        timeframe = (
+            sorted(price_data.keys(), key=lambda tf: self.__get_timeframe_interval(tf))[
+                0
+            ]
+            if price_data
+            else None
+        )
 
         if not timeframe or timeframe not in price_data:
             logger.warning(f"No price data available for getting current price")
@@ -547,11 +581,12 @@ class TradingLogicEngine:
             "high": "High",
             "low": "Low",
             "close": "Close",
+            "time": "Time",
         }
 
         column = price_map.get(price_type.lower(), "Close")
 
-        return last_row[column]
+        return last_row[column], df.index[-1]
 
     def _get_risk_parameters(self, regime: str) -> Dict[str, Any]:
         """

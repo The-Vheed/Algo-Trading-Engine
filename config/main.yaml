@@ -16,8 +16,8 @@ trading_api:
 
 backtesting:
   data_source: "historical_live"
-  start: "2025-06-25T16:00:00"
-  end: "2025-06-25T23:59:00"
+  start: "2025-06-25T10:00:00"
+  end: "2025-06-25T16:59:00"
   initial_balance: 10000
   commission_per_lot: 7.0
   spread_pips: 1.2

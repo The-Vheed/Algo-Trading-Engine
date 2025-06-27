@@ -31,7 +31,7 @@ class DataProvider:
         source_type: str,  # 'csv', 'live', or 'historical_live'
         symbol: str = "EURUSD",
         timeframes: List[str] = ["H1", "H4"],
-        counts: List[int] = [1250, 500],
+        counts: Dict[str, int] = {"H1": 500, "H4": 500},
         trading_api: Optional[object] = None,  # Trading API object (MT5FastAPI, etc.)
         base_path: str = "",
         timeout: int = 30,
@@ -68,7 +68,7 @@ class DataProvider:
         self.source_type = source_type
         self.symbol = symbol
         self.timeframes = timeframes
-        self.counts = dict(zip(timeframes, counts))  # Map timeframe to its count
+        self.counts = counts
         self.trading_api = trading_api
         self.timeout = timeout
         self.retries = retries

@@ -12,6 +12,9 @@ from src.core.regime_detector import RegimeDetector
 from src.core.trading_logic import TradingLogicEngine
 
 
+DEFAULT_COUNT = 2  # Fallback default
+
+
 def load_trading_api(config):
     """
     Load the appropriate trading API based on configuration.
@@ -45,6 +48,71 @@ def load_trading_api(config):
         return None
 
 
+def determine_counts_from_indicators(indicators_config):
+    """
+    Analyze indicator configurations and determine the required count of data
+    for each timeframe based on the largest period parameter in any indicator.
+
+    Args:
+        indicators_config (dict): Dictionary mapping timeframes to lists of indicator configs
+
+    Returns:
+        dict: Dictionary mapping timeframes to their required data counts
+    """
+    timeframe_counts = {}
+
+    if not indicators_config:
+        logger.warning("No indicator configuration found, using default counts")
+        return timeframe_counts
+
+    # Multiplier to ensure we have enough historical data for calculations
+    safety_multiplier = 1.1
+
+    for timeframe, indicators in indicators_config.items():
+        max_period = 0
+
+        logger.debug(f"Analyzing indicators for timeframe {timeframe}")
+
+        for indicator in indicators:
+            params = indicator.get("params", {})
+            indicator_name = indicator.get("name", "unknown")
+
+            # Find any parameter containing 'period' in its name
+            for param_name, param_value in params.items():
+                if "period" in param_name.lower() and isinstance(
+                    param_value, (int, float)
+                ):
+                    if param_value > max_period:
+                        max_period = param_value
+                        logger.debug(
+                            f"New max period found: {max_period} from {indicator_name}.{param_name}"
+                        )
+
+            # Special case for MACD which uses fast/slow periods
+            if indicator.get("type") == "MACD":
+                slow_period = params.get("slow", 0)
+                if slow_period > max_period:
+                    max_period = slow_period
+                    logger.debug(
+                        f"New max period found: {max_period} from {indicator_name}.slow"
+                    )
+
+        # Set minimum required count with safety multiplier
+        if max_period > 0:
+            required_count = int(max_period * safety_multiplier)
+            logger.info(
+                f"Determined count for {timeframe}: {required_count} (based on max period {max_period})"
+            )
+            timeframe_counts[timeframe] = required_count
+        else:
+            logger.warning(
+                f"No period parameters found for {timeframe}, using default {DEFAULT_COUNT}"
+            )
+            timeframe_counts[timeframe] = DEFAULT_COUNT
+
+    return timeframe_counts
+
+
 async def main():
     # Initialize configuration managers
     logger.info("Starting Trading System")
@@ -75,14 +143,25 @@ async def main():
 
         logger.debug(f"Using timeframes from config: {configured_timeframes}")
 
-        # Prepare count values for each timeframe
-        default_data_count = 50
-        timeframe_counts = [default_data_count] * len(configured_timeframes)
+        # Get indicator configuration
+        indicators_config = config.get("strategy", {}).get("indicators", {})
+
+        # Determine counts based on indicator parameters
+        timeframe_counts = determine_counts_from_indicators(indicators_config)
+
+        # Ensure all configured timeframes have a count, use default if not determined from indicators
+        DEFAULT_COUNT = 2
+        for tf in configured_timeframes:
+            if tf not in timeframe_counts:
+                timeframe_counts[tf] = DEFAULT_COUNT
+                logger.warning(
+                    f"No indicators found for {tf}, using default count: {DEFAULT_COUNT}"
+                )
+
+        logger.debug(f"Using data counts: {timeframe_counts}")
 
         # Validate indicator timeframes
-        indicator_timeframes = set(
-            config.get("strategy", {}).get("indicators", {}).keys()
-        )
+        indicator_timeframes = set(indicators_config.keys())
         if indicator_timeframes:
             configured_timeframes_set = set(configured_timeframes)
             # Check if any indicator timeframe is not in the configured timeframes
@@ -137,7 +216,7 @@ async def main():
                     base_path="data/historical" if data_source == "csv" else "",
                     symbol=configured_symbols[0],
                     timeframes=configured_timeframes,
-                    counts=timeframe_counts,
+                    counts=timeframe_counts,  # Now passing the dictionary of counts
                     trading_api=api_for_data,
                     start_time=start_time,
                     end_time=end_time,
@@ -151,17 +230,17 @@ async def main():
                             + str(df.tail(1))
                         )
 
-                        # Assert length is correct for csv data as well
+                        # Assert length is correct
                         assert (
                             len(df) == data_provider.counts[tf]
-                        ), f"CSV yielded {tf} data has length {len(df)}, expected {data_provider.counts[tf]}"
+                        ), f"Data yielded {tf} data has length {len(df)}, expected {data_provider.counts[tf]}"
 
                     # Calculate indicators from the current data snapshot
                     indicators = indicator_engine.calculate_indicators(data_dict)
 
                     # Detect market regime
                     current_regime = regime_detector.detect_regime(indicators)
-                    logger.info(f"Current market regime: {current_regime}")
+                    logger.debug(f"Current market regime: {current_regime}")
 
                     # Generate trading signals based on the detected regime
                     signals = trading_logic_engine.generate_signals(
@@ -175,7 +254,7 @@ async def main():
                         )
                         for signal in signals["entry_signals"]:
                             logger.info(
-                                f"  {signal['type']} signal at price {signal['price']}"
+                                f"  {signal['type']} signal at time {signal['timestamp']} price {signal['price']}"
                             )
 
                     if signals["exit_signals"]:
@@ -224,7 +303,7 @@ async def main():
                     trading_api=trading_api,  # Pass the trading API object
                     symbol=configured_symbols[0],
                     timeframes=configured_timeframes,
-                    counts=timeframe_counts,
+                    counts=timeframe_counts,  # Now passing the dictionary of counts
                 )
 
                 live_stream = live_provider.stream_data()
@@ -240,7 +319,7 @@ async def main():
 
                     indicators = indicator_engine.calculate_indicators(data_dict)
                     current_regime = regime_detector.detect_regime(indicators)
-                    logger.info(f"Current market regime (live): {current_regime}")
+                    logger.debug(f"Current market regime (live): {current_regime}")
 
                     signals = trading_logic_engine.generate_signals(
                         current_regime, indicators, data_dict
@@ -252,7 +331,7 @@ async def main():
                         )
                         for signal in signals["entry_signals"]:
                             logger.info(
-                                f"  {signal['type']} signal at price {signal['price']}"
+                                f"  {signal['type']} signal at time {signal['timestamp']} price {signal['price']}"
                             )
 
                     if signals["exit_signals"]:
@@ -288,10 +367,6 @@ async def main():
 
     except KeyboardInterrupt:
         logger.info("\nKeyboard interrupt detected. Shutting down gracefully...")
-        # Disconnect the trading API directly
-        if trading_api and hasattr(trading_api, "disconnect"):
-            await trading_api.disconnect()
-            logger.info("Disconnected from trading API.")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         import traceback
@@ -299,6 +374,10 @@ async def main():
         traceback.print_exc()
     finally:
         logger.info("\nStopped Trading System")
+        # Disconnect the trading API directly
+        if trading_api and hasattr(trading_api, "disconnect"):
+            await trading_api.disconnect()
+            logger.info("Disconnected from trading API.")
 
 
 if __name__ == "__main__":
