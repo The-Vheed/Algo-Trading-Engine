@@ -79,7 +79,7 @@ async def main():
         logger.debug(f"Using timeframes from config: {configured_timeframes}")
 
         # Prepare count values for each timeframe
-        default_data_count = 500
+        default_data_count = 3
         timeframe_counts = [default_data_count] * len(configured_timeframes)
 
         # Validate indicator timeframes
@@ -112,7 +112,7 @@ async def main():
             logger.info("Backtesting. Loading historical data...")
             try:
                 csv_provider = DataProvider(
-                    source_type="csv",
+                    source_type=config.get("backtesting", {}).get("data_source", "csv"),
                     base_path="data/historical",
                     symbol=configured_symbols[0],
                     timeframes=configured_timeframes,
@@ -182,6 +182,14 @@ async def main():
         else:
             logger.info("Live Trading. Loading live data...")
             try:
+                # Connect the trading API before passing to DataProvider
+                if trading_api and hasattr(trading_api, "connect"):
+                    connected = await trading_api.connect()
+                    if not connected:
+                        logger.error("Failed to connect to trading API.")
+                        return
+                    logger.info("Trading API connected.")
+
                 live_provider = DataProvider(
                     source_type="live",
                     trading_api=trading_api,  # Pass the trading API object
@@ -189,7 +197,7 @@ async def main():
                     timeframes=configured_timeframes,
                     counts=timeframe_counts,
                 )
-                await live_provider.connect()
+                # No need to call await live_provider.connect() here
 
                 live_stream = live_provider.stream_data()
                 async for data_dict in live_stream:

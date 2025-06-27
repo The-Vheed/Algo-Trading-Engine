@@ -1,8 +1,7 @@
 name: "EUR_USD_Dynamic_Regime"
 version: "1.0"
 
-live: true
-data_source: "CSV"
+live: false
 
 api:
   key: "XtejxmiwNHZqDFk"
@@ -16,6 +15,7 @@ trading_api:
     access_key: "e86f80f6-b69d-5593-b9a6-0b1d8df45a2d"
 
 backtesting:
+  data_source: "csv"
   start_date: "2020-01-01"
   end_date: "2024-12-31"
   initial_balance: 10000
@@ -165,35 +165,35 @@ strategy:
             method: "level"
             target: "support"
             level: "M5.range_sr.S1"
-    NEUTRAL:
-      entries:
-        BUY:
-          conditions:
-            - "M1.trend_ema_fast.value > M1.trend_ema_slow.value"
-            - "M5.trend_ema_fast.value > M5.trend_ema_slow.value"
-            - "M5.range_stoch.k < 20"
-        SELL:
-          conditions:
-            - "M1.trend_ema_fast.value < M1.trend_ema_slow.value"
-            - "M5.trend_ema_fast.value < M5.trend_ema_slow.value"
-            - "M5.range_stoch.k > 80"
-      exits:
-        BUY:
-          stop_loss:
-            method: "ATR"
-            indicator: "M5.trend_atr"
-            multiplier: 1.0
-          take_profit:
-            method: "risk_reward"
-            ratio: 1.5
-        SELL:
-          stop_loss:
-            method: "ATR"
-            indicator: "M5.trend_atr"
-            multiplier: 1.0
-          take_profit:
-            method: "risk_reward"
-            ratio: 1.5
+    # NEUTRAL:
+    #   entries:
+    #     BUY:
+    #       conditions:
+    #         - "M1.trend_ema_fast.value > M1.trend_ema_slow.value"
+    #         - "M5.trend_ema_fast.value > M5.trend_ema_slow.value"
+    #         - "M5.range_stoch.k < 20"
+    #     SELL:
+    #       conditions:
+    #         - "M1.trend_ema_fast.value < M1.trend_ema_slow.value"
+    #         - "M5.trend_ema_fast.value < M5.trend_ema_slow.value"
+    #         - "M5.range_stoch.k > 80"
+    #   exits:
+    #     BUY:
+    #       stop_loss:
+    #         method: "ATR"
+    #         indicator: "M5.trend_atr.value"
+    #         multiplier: 1.0
+    #       take_profit:
+    #         method: "risk_reward"
+    #         ratio: 1.5
+    #     SELL:
+    #       stop_loss:
+    #         method: "ATR"
+    #         indicator: "M5.trend_atr.value"
+    #         multiplier: 1.0
+    #       take_profit:
+    #         method: "risk_reward"
+    #         ratio: 1.5
 
   # ----------------------------------------------------------------------------------
   # 4. RISK MANAGEMENT

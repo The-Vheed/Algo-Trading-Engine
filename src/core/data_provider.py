@@ -86,34 +86,6 @@ class DataProvider:
         elif self.source_type == "live" and not trading_api:
             raise ValueError("trading_api must be provided for live data source")
 
-    async def connect(self):
-        """
-        Connects to the trading API if source_type is 'live'.
-        """
-        if self.source_type == "live" and not self.is_connected:
-            logger.debug("Connecting to trading API...")
-
-            try:
-                if hasattr(self.trading_api, "connect"):
-                    connection_success = await self.trading_api.connect()
-                    if not connection_success:
-                        raise RuntimeError("Failed to connect to trading API")
-
-                self.is_connected = True
-                logger.info("Trading API connected successfully")
-
-                # Initialize next_fetch_time to allow immediate fetch
-                for tf in self.timeframes:
-                    self.next_fetch_time[tf] = datetime.min
-            except Exception as e:
-                logger.error(f"Failed to connect to trading API: {e}")
-                self.is_connected = False
-                raise
-        elif self.source_type == "live" and self.is_connected:
-            logger.debug("Trading API already connected.")
-        elif self.source_type == "csv":
-            logger.debug("Data source is CSV, no API connection needed.")
-
     async def disconnect(self):
         """
         Disconnects the trading API if it's connected.
@@ -501,7 +473,7 @@ class DataProvider:
             rounded_ts = (current_time_ts // interval_seconds) * interval_seconds
 
             next_interval_start = datetime.fromtimestamp(rounded_ts + interval_seconds)
-            target_wake_time = next_interval_start + timedelta(seconds=0.5)
+            target_wake_time = next_interval_start + timedelta(seconds=3)
 
             sleep_duration = (target_wake_time - current_time).total_seconds()
             sleep_duration = max(0.01, sleep_duration)
