@@ -22,8 +22,8 @@ def load_trading_api(config):
     Returns:
         Trading API object or None if not configured for live trading
     """
-    if not config.get("live", False):
-        return None
+    # if not config.get("live", False):
+    #     return None
 
     trading_api_config = config.get("trading_api", {})
     api_type = trading_api_config.get("type", "").lower()
@@ -59,10 +59,7 @@ async def main():
 
         # Load trading API if configured for live trading
         trading_api = load_trading_api(config)
-        if config.get("live", False) and trading_api:
-            logger.info(f"Loaded trading API: {type(trading_api).__name__}")
-        elif config.get("live", False):
-            logger.warning("Live trading enabled but no trading API configured")
+        logger.info(f"Loaded trading API: {type(trading_api).__name__}")
 
         # Extract symbols from config file
         configured_symbols = config.get("strategy", {}).get("symbols", [])
@@ -79,7 +76,7 @@ async def main():
         logger.debug(f"Using timeframes from config: {configured_timeframes}")
 
         # Prepare count values for each timeframe
-        default_data_count = 3
+        default_data_count = 50
         timeframe_counts = [default_data_count] * len(configured_timeframes)
 
         # Validate indicator timeframes
@@ -111,16 +108,43 @@ async def main():
         if not config["live"]:
             logger.info("Backtesting. Loading historical data...")
             try:
-                csv_provider = DataProvider(
-                    source_type=config.get("backtesting", {}).get("data_source", "csv"),
-                    base_path="data/historical",
+                # Get start and end times from config
+                backtesting_config = config.get("backtesting", {})
+                start_time = backtesting_config.get("start")
+                end_time = backtesting_config.get("end")
+                data_source = backtesting_config.get("data_source", "csv")
+
+                # For historical_live, we need to pass the trading API
+                api_for_data = None
+                if data_source == "historical_live":
+                    logger.info("Using trading API for historical data")
+                    api_for_data = trading_api
+                    if not api_for_data:
+                        # Initialize trading API if not already done
+                        api_for_data = load_trading_api(config)
+                        # Connect to the API
+                        if api_for_data and hasattr(api_for_data, "connect"):
+                            connected = await api_for_data.connect()
+                            if not connected:
+                                logger.error(
+                                    "Failed to connect to trading API for historical data."
+                                )
+                                return
+                            logger.info("Trading API connected for historical data.")
+
+                data_provider = DataProvider(
+                    source_type=data_source,
+                    base_path="data/historical" if data_source == "csv" else "",
                     symbol=configured_symbols[0],
                     timeframes=configured_timeframes,
                     counts=timeframe_counts,
+                    trading_api=api_for_data,
+                    start_time=start_time,
+                    end_time=end_time,
                 )
 
-                csv_stream = csv_provider.stream_data()
-                async for data_dict in csv_stream:
+                data_stream = data_provider.stream_data()
+                async for data_dict in data_stream:
                     for tf, df in data_dict.items():
                         logger.debug(
                             f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
@@ -129,8 +153,8 @@ async def main():
 
                         # Assert length is correct for csv data as well
                         assert (
-                            len(df) == csv_provider.counts[tf]
-                        ), f"CSV yielded {tf} data has length {len(df)}, expected {csv_provider.counts[tf]}"
+                            len(df) == data_provider.counts[tf]
+                        ), f"CSV yielded {tf} data has length {len(df)}, expected {data_provider.counts[tf]}"
 
                     # Calculate indicators from the current data snapshot
                     indicators = indicator_engine.calculate_indicators(data_dict)
@@ -179,6 +203,11 @@ async def main():
                 import traceback
 
                 traceback.print_exc()
+
+                # Disconnect the trading API if it was used for historical data
+                if api_for_data and hasattr(api_for_data, "disconnect"):
+                    await api_for_data.disconnect()
+                    logger.debug("Disconnected trading API used for historical data.")
         else:
             logger.info("Live Trading. Loading live data...")
             try:
@@ -197,7 +226,6 @@ async def main():
                     timeframes=configured_timeframes,
                     counts=timeframe_counts,
                 )
-                # No need to call await live_provider.connect() here
 
                 live_stream = live_provider.stream_data()
                 async for data_dict in live_stream:
@@ -253,15 +281,17 @@ async def main():
 
                 traceback.print_exc()
             finally:
-                if live_provider and hasattr(live_provider, "disconnect"):
-                    await live_provider.disconnect()
-                    logger.debug("Disconnected from live data provider.")
+                # Disconnect the trading API directly
+                if trading_api and hasattr(trading_api, "disconnect"):
+                    await trading_api.disconnect()
+                    logger.debug("Disconnected from trading API.")
 
     except KeyboardInterrupt:
         logger.info("\nKeyboard interrupt detected. Shutting down gracefully...")
-        if live_provider and hasattr(live_provider, "disconnect"):
-            await live_provider.disconnect()
-            logger.info("Disconnected from live data provider.")
+        # Disconnect the trading API directly
+        if trading_api and hasattr(trading_api, "disconnect"):
+            await trading_api.disconnect()
+            logger.info("Disconnected from trading API.")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         import traceback

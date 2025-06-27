@@ -28,7 +28,7 @@ class DataProvider:
 
     def __init__(
         self,
-        source_type: str,  # 'csv' or 'live'
+        source_type: str,  # 'csv', 'live', or 'historical_live'
         symbol: str = "EURUSD",
         timeframes: List[str] = ["H1", "H4"],
         counts: List[int] = [1250, 500],
@@ -38,12 +38,15 @@ class DataProvider:
         retries: int = 3,
         initial_fetch_timeout: int = 60,  # Max time to wait for initial live data
         live_polling_interval: int = 10,  # How often to poll for new live data (seconds)
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
     ) -> None:
         """
         Initializes the DataProvider.
 
         Args:
-            source_type (str): 'csv' for backtesting from CSV files, 'live' for real-time data from API.
+            source_type (str): 'csv' for backtesting from CSV files, 'live' for real-time data from API,
+                               'historical_live' for historical data from API.
             symbol (str): The trading symbol (e.g., "EURUSD").
             timeframes (List[str]): List of timeframes to load/stream (e.g., ["H1", "H4"]).
             counts (List[int]): List of historical data counts corresponding to timeframes.
@@ -53,9 +56,11 @@ class DataProvider:
             retries (int): Number of retries for API requests.
             initial_fetch_timeout (int): Max time to wait for initial live data in seconds.
             live_polling_interval (int): How often to poll for new live data in seconds.
+            start_time (Optional[str]): Start time for historical data in ISO format (YYYY-MM-DDTHH:MM:SS).
+            end_time (Optional[str]): End time for historical data in ISO format (YYYY-MM-DDTHH:MM:SS).
         """
-        if source_type not in ["csv", "live"]:
-            raise ValueError("source_type must be 'csv' or 'live'")
+        if source_type not in ["csv", "live", "historical_live"]:
+            raise ValueError("source_type must be 'csv', 'live', or 'historical_live'")
 
         if len(timeframes) != len(counts):
             raise ValueError("Lengths of 'timeframes' and 'counts' must be equal.")
@@ -69,32 +74,52 @@ class DataProvider:
         self.retries = retries
         self.initial_fetch_timeout = initial_fetch_timeout
         self.live_polling_interval = live_polling_interval
+        self.start_time = start_time
+        self.end_time = end_time
+        self.base_path = base_path
 
         self.is_connected: bool = False  # Track connection status
+        self.data_loaded: bool = False  # Track if data has been loaded
 
         self.data_store: Dict[str, pd.DataFrame] = {}
         self.last_fetched_time: Dict[str, datetime] = {}
         self.next_fetch_time: Dict[str, datetime] = {}
 
+        # Validate base_path for CSV mode (but don't load data yet)
         if self.source_type == "csv":
-            self.base_path = base_path
             if not base_path or not os.path.isdir(base_path):
                 raise ValueError(
                     f"For 'csv' source_type, 'base_path' must be a valid directory. Got: {base_path}"
                 )
-            self.__load_initial_csv_data()
+        elif self.source_type == "historical_live" and not trading_api:
+            raise ValueError(
+                "trading_api must be provided for historical_live data source"
+            )
         elif self.source_type == "live" and not trading_api:
             raise ValueError("trading_api must be provided for live data source")
 
-    async def disconnect(self):
+    async def stream_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
         """
-        Disconnects the trading API if it's connected.
+        Yields the latest data for each timeframe.
+        In CSV/historical_live mode, it simulates a stream. In live mode, it queries the API.
         """
-        if self.trading_api and self.is_connected:
-            if hasattr(self.trading_api, "disconnect"):
-                await self.trading_api.disconnect()
-            self.is_connected = False
-            logger.debug("Disconnected from trading API.")
+        # Load data if not already loaded
+        if not self.data_loaded:
+            if self.source_type == "csv":
+                self.__load_initial_csv_data()
+                self.data_loaded = True
+            elif self.source_type == "historical_live":
+                await self.__load_historical_data_from_api()
+                self.data_loaded = True
+
+        if self.source_type in ["csv", "historical_live"]:
+            # Use async for to iterate over the async generator __stream_datastore
+            async for data in self.__stream_datastore():
+                yield data
+        elif self.source_type == "live":
+            # Use async for to iterate over the async generator __stream_live_data
+            async for data in self.__stream_live_data():
+                yield data
 
     def __load_initial_csv_data(self) -> None:
         """
@@ -177,29 +202,74 @@ class DataProvider:
         else:
             raise ValueError(f"Unsupported timeframe format: {tf}")
 
-    async def stream_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
+    async def __load_historical_data_from_api(self) -> None:
         """
-        Yields the latest data for each timeframe.
-        In CSV mode, it simulates a stream. In live mode, it queries the API.
+        Loads historical data from the trading API based on specified start and end times.
+        This is used when source_type is 'historical_live'.
         """
-        if self.source_type == "csv":
-            # Use async for to iterate over the async generator __stream_csv_data
-            async for data in self.__stream_csv_data():
-                yield data
-        elif self.source_type == "live":
-            # Use async for to iterate over the async generator __stream_live_data
-            async for data in self.__stream_live_data():
-                yield data
+        if not self.trading_api:
+            raise ValueError("Trading API must be provided for historical data loading")
 
-    async def __stream_csv_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
+        logger.info(f"Loading historical data from trading API for {self.symbol}")
+        logger.info(f"Time range: {self.start_time} to {self.end_time}")
+
+        for tf in self.timeframes:
+            try:
+                logger.debug(f"Fetching historical data for {tf}...")
+                response = await self.trading_api.get_price_data(
+                    symbol=self.symbol,
+                    timeframes=[tf],
+                    start_time=self.start_time,
+                    end_time=self.end_time,
+                    count=None,  # Let the API determine count based on date range
+                )
+
+                if response and "data" in response and tf in response["data"]:
+                    df = response["data"][tf]
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        # Use the centralized timestamp parser
+                        df = self._parse_timestamps(df)
+                        self.validate_data(df, tf)
+                        self.data_store[tf] = df
+                        logger.info(
+                            f"Loaded {len(df)} records for {tf} from trading API"
+                        )
+                    else:
+                        logger.warning(
+                            f"Empty or invalid DataFrame for {tf} from trading API"
+                        )
+                else:
+                    logger.warning(
+                        f"Failed to load historical data for {tf} from trading API"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Error loading historical data for {tf} from trading API: {e}"
+                )
+                raise RuntimeError(
+                    f"Error loading historical data for {self.symbol}/{tf}: {e}"
+                )
+
+        # Determine the earliest common starting point for streaming
+        if self.data_store:
+            earliest_start = min(df.index.min() for df in self.data_store.values())
+            self.current_stream_time = earliest_start
+            logger.info(
+                f"Historical data loaded from API. Stream will start from: {self.current_stream_time}"
+            )
+        else:
+            self.current_stream_time = None
+            logger.warning("No historical data loaded from API.")
+
+    async def __stream_datastore(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
         """
-        Streams historical data from loaded CSVs.
+        Streams data from loaded datastore (CSV or historical API data).
         Yields dataframes for each timeframe, with lengths equal to their respective counts,
         ensuring the end-timestamps are synchronized as much as possible.
         No data is yielded until all timeframes have at least their `count` number of records.
         """
         if not self.data_store:
-            logger.error("No CSV data available to stream.")
+            logger.error("No data available in data store to stream.")
             return
 
         sorted_timeframes = sorted(
@@ -218,7 +288,7 @@ class DataProvider:
 
         current_master_time = earliest_overall_data_start
         logger.info(
-            f"CSV Stream initialized. Master clock starting from: {current_master_time}. "
+            f"Data Store Stream initialized. Master clock starting from: {current_master_time}. "
             f"Will advance by {master_step_interval}."
         )
 
@@ -270,7 +340,7 @@ class DataProvider:
                 # All timeframes are now ready to provide data of required count
                 yield temp_data_for_check
                 logger.debug(
-                    f"Initial CSV data yielded at {current_master_time} after warm-up."
+                    f"Initial data yielded at {current_master_time} after warm-up."
                 )
                 initial_yield_achieved = True
             else:
@@ -286,7 +356,7 @@ class DataProvider:
 
         if not initial_yield_achieved:
             logger.critical(
-                "CSV stream could not find a starting point where all timeframes met their 'count' requirements. Stream will not yield any data."
+                "Data stream could not find a starting point where all timeframes met their 'count' requirements. Stream will not yield any data."
             )
             return  # Exit if warm-up failed
 
@@ -327,7 +397,7 @@ class DataProvider:
             ):  # Only yield if data was prepared for at least one timeframe
                 yield yielded_data_this_round
                 logger.debug(
-                    f"Yielded CSV data ending at {current_master_time}"
+                    f"Yielded data ending at {current_master_time}"
                 )  # Changed to debug
             else:
                 logger.debug(
@@ -338,7 +408,7 @@ class DataProvider:
             current_master_time += master_step_interval
 
         logger.debug(
-            "CSV data stream finished: Reached end of available historical data."
+            "Data stream finished: Reached end of available historical data."
         )  # Changed to debug
 
     async def __stream_live_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:

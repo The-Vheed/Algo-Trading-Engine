@@ -15,9 +15,9 @@ trading_api:
     access_key: "e86f80f6-b69d-5593-b9a6-0b1d8df45a2d"
 
 backtesting:
-  data_source: "csv"
-  start_date: "2020-01-01"
-  end_date: "2024-12-31"
+  data_source: "historical_live"
+  start: "2025-06-25T16:00:00"
+  end: "2025-06-25T23:59:00"
   initial_balance: 10000
   commission_per_lot: 7.0
   spread_pips: 1.2
