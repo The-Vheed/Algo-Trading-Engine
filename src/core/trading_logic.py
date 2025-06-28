@@ -202,6 +202,7 @@ class TradingLogicEngine:
                 entry_price,
                 signal_exits.get("take_profit", {}),
                 indicator_data,
+                stop_loss,
             )
 
             exit_signals.append(
@@ -278,6 +279,7 @@ class TradingLogicEngine:
         entry_price: float,
         take_profit_config: Dict[str, Any],
         indicator_data: Dict[str, Dict[str, Dict[str, Any]]],
+        stop_loss: float | None = None,
     ) -> float:
         """
         Calculate the take profit level based on the configuration.
@@ -287,18 +289,6 @@ class TradingLogicEngine:
         if method == "risk_reward":
             # Risk:reward ratio based on stop loss
             ratio = take_profit_config.get("ratio", 2.0)
-
-            # Get the stop loss config and calculate SL
-            stop_loss_config = take_profit_config.get("stop_loss_config", {})
-            if not stop_loss_config:
-                # If no specific SL config provided for TP calculation, get from the main config
-                stop_loss_config = self.trading_logic.get(signal_type, {}).get(
-                    "stop_loss", {}
-                )
-
-            stop_loss = self._calculate_stop_loss(
-                signal_type, entry_price, stop_loss_config, indicator_data
-            )
 
             risk_distance = abs(entry_price - stop_loss)
             if signal_type == "BUY":
