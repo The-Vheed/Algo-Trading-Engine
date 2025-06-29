@@ -64,12 +64,12 @@ strategy:
       - name: "trend_atr"
         type: "ATR"
         params: { period: 14 }
-      - name: "range_stoch"
-        type: "STOCH"
-        params: { k_period: 14, d_period: 3, smoothing: 3 }
-      - name: "range_sr"
-        type: "PIVOT"
-        params: { method: "classic" }
+      # - name: "range_stoch"
+      #   type: "STOCH"
+      #   params: { k_period: 14, d_period: 3, smoothing: 3 }
+      # - name: "range_sr"
+      #   type: "PIVOT"
+      #   params: { method: "classic" }
       - name: "range_atr"
         type: "ATR"
         params: { period: 14 }
