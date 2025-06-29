@@ -1,6 +1,8 @@
 import sys
 import asyncio
 import pandas as pd
+import os
+import json
 
 from src.utils.logger import Logger
 
@@ -340,11 +342,11 @@ async def main():
 
                     # Log exit signals if any
                     if signals["exit_signals"]:
-                        logger.debug(
+                        logger.info(
                             f"Exit levels calculated: {len(signals['exit_signals'])}"
                         )
                         for signal in signals["exit_signals"]:
-                            logger.debug(
+                            logger.info(
                                 f"  {signal['entry_signal_type']} - SL: {signal['stop_loss']}, TP: {signal['take_profit']}"
                             )
 
@@ -359,6 +361,47 @@ async def main():
                 logger.info(
                     f"Backtesting complete. Final balance: {trade_executor.current_balance:.2f}"
                 )
+
+                # --- EXPORT BACKTEST RESULTS ---
+                backtest_cfg = config.get("backtesting", {})
+                output_folder = backtest_cfg.get("output_folder", "backtest_results")
+                save_datastore = backtest_cfg.get("save_datastore", False)
+                save_trade_history = backtest_cfg.get("save_trade_history", False)
+
+                os.makedirs(output_folder, exist_ok=True)
+
+                # Save price data (datastore)
+                if save_datastore:
+                    price_data_dir = os.path.join(output_folder, "price_data")
+                    os.makedirs(price_data_dir, exist_ok=True)
+                    for tf, df in data_provider.data_store.items():
+                        if isinstance(df, pd.DataFrame):
+                            df.to_csv(os.path.join(price_data_dir, f"{tf}.csv"))
+                    logger.info(f"Saved price data to {price_data_dir}")
+
+                # Save trade history
+                if save_trade_history:
+                    trades_path = os.path.join(output_folder, "trade_history.json")
+                    with open(trades_path, "w") as f:
+                        json.dump(
+                            trade_executor.closed_positions, f, indent=2, default=str
+                        )
+                    logger.info(f"Saved trade history to {trades_path}")
+
+                # Show backtest metrics
+                metrics = trade_executor.get_backtest_metrics()
+                logger.info("Backtest Metrics Summary:")
+                logger.info(f"  Initial Balance: {metrics['initial_balance']:.2f}")
+                logger.info(f"  Final Balance:   {metrics['final_balance']:.2f}")
+                logger.info(f"  Max Balance:     {metrics['max_balance']:.2f}")
+                logger.info(f"  Min Balance:     {metrics['min_balance']:.2f}")
+                logger.info(f"  ROI:             {metrics['roi_percent']:.2f}%")
+                logger.info(f"  Max ROI:         {metrics['max_roi_percent']:.2f}%")
+                logger.info(
+                    f"  Max Drawdown:    {metrics['max_drawdown_percent']:.2f}%"
+                )
+                logger.info(f"  Total Trades:    {metrics['total_trades']}")
+                logger.info(f"  Win Rate:        {metrics['win_rate']:.2f}%")
 
             except Exception as e:
                 logger.error(f"Error during backtesting: {e}")

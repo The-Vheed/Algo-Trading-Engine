@@ -127,26 +127,9 @@ class TradeExecutor:
             else:
                 adjusted_price -= spread_amount  # Sell at bid price (lower)
 
-        # Calculate position size based on risk
-        position_size = self._calculate_position_size(
-            signal.get("symbol", ""),
-            adjusted_price,
-            exit_parameters.get(
-                "stop_loss",
-                (
-                    adjusted_price * 0.99
-                    if signal["type"] == "BUY"
-                    else adjusted_price * 1.01
-                ),
-            ),
-            self.risk_per_trade,
-        )
-
         # Execute the trade (differently depending on backtest vs live)
         if self.is_backtesting:
-            return self._execute_backtest_trade(
-                signal, exit_parameters, position_size, adjusted_price
-            )
+            return self._execute_backtest_trade(signal, exit_parameters, adjusted_price)
         else:
             # Live trading via API
             if not self.trading_api:
@@ -181,17 +164,14 @@ class TradeExecutor:
                 logger.info(
                     f"Successfully executed {signal['type']} order for {signal.get('symbol', '')}"
                 )
-
-                # Update performance tracking
-                self._record_trade_opened(signal, exit_parameters, position_size)
-
+                # No need to record position size
+                self._record_trade_opened(signal, exit_parameters)
             return result
 
     def _execute_backtest_trade(
         self,
         signal: Dict[str, Any],
         exit_parameters: Dict[str, Any],
-        position_size: float,
         adjusted_price: float,
     ) -> Dict[str, Any]:
         """
@@ -200,7 +180,6 @@ class TradeExecutor:
         Args:
             signal: Trading signal
             exit_parameters: SL/TP parameters
-            position_size: Calculated position size
             adjusted_price: Price adjusted for spread
 
         Returns:
@@ -209,38 +188,46 @@ class TradeExecutor:
         # Create a unique trade ID
         trade_id = str(uuid.uuid4())
 
+        # Store the current account balance at entry for proper PnL calculation
+        entry_balance = self.current_balance
+
+        # Calculate the actual risk amount in currency
+        risk_amount = entry_balance * (self.risk_per_trade / 100.0)
+
         # Create the position object
         position = {
-            "id": trade_id,
+            "id": str(uuid.uuid4()),
             "symbol": signal.get("symbol", ""),
-            "type": signal["type"],  # BUY or SELL
+            "type": signal["type"],
             "open_price": adjusted_price,
             "open_time": signal.get("timestamp", datetime.now()),
-            "size": position_size,
             "stop_loss": exit_parameters.get("stop_loss"),
             "take_profit": exit_parameters.get("take_profit"),
             "status": "OPEN",
             "pnl": 0.0,
+            "exit_pnl": 0.0,  # <--- Add this field
             "close_price": None,
             "close_time": None,
             "close_reason": None,
+            "entry_balance": entry_balance,
+            "risk_amount": risk_amount,
         }
 
         # Add to open positions
         self.positions.append(position)
 
         # Update performance tracking
-        self._record_trade_opened(signal, exit_parameters, position_size)
+        self._record_trade_opened(signal, exit_parameters)
 
         logger.info(
-            f"Backtest: Opened {signal['type']} position of {position_size} units for {signal.get('symbol', '')} at {adjusted_price}"
+            f"Backtest: Opened {signal['type']} position for {signal.get('symbol', '')} at {adjusted_price}"
         )
 
         return {
             "success": True,
             "message": f"Backtest: Opened {signal['type']} position",
             "order_details": position,
-            "trade_id": trade_id,
+            "trade_id": position["id"],
         }
 
     def update(
@@ -326,24 +313,57 @@ class TradeExecutor:
                 closed_position["close_reason"] = close_reason
                 closed_position["status"] = "CLOSED"
 
-                # Calculate P&L
-                pip_size = 0.0001 if position["symbol"].endswith("USD") else 0.01
+                # Calculate P&L based on risk amount and exit reason
+                if close_reason == "stop_loss":
+                    # Loss equals the risk amount
+                    pnl = -position.get("risk_amount", 0.0)
+                elif close_reason == "take_profit":
+                    # Profit equals risk amount multiplied by RRR
+                    # Calculate RRR from position's TP and SL
+                    entry = position["open_price"]
+                    sl = position["stop_loss"]
+                    tp = position["take_profit"]
 
-                if position["type"] == "BUY":
-                    pips = (close_price - position["open_price"]) / pip_size
-                else:  # SELL
-                    pips = (position["open_price"] - close_price) / pip_size
+                    if position["type"] == "BUY":
+                        sl_distance = abs(entry - sl)
+                        tp_distance = abs(tp - entry)
+                    else:  # SELL
+                        sl_distance = abs(entry - sl)
+                        tp_distance = abs(entry - tp)
 
-                # Calculate monetary profit/loss
-                pnl = pips * position["size"] * 10  # Assuming $10 per pip per lot
+                    # Calculate the risk-reward ratio
+                    rrr = tp_distance / sl_distance if sl_distance > 0 else 1.0
 
-                # Apply commission
-                commission = (
-                    position["size"] / 100000
-                ) * self.commission_per_lot  # Assuming size in units
-                pnl -= commission
+                    # Profit equals risk amount multiplied by RRR
+                    pnl = position.get("risk_amount", 0.0) * rrr
+                else:
+                    # For any other close reason, calculate proportionally
+                    entry = position["open_price"]
+                    sl = position["stop_loss"]
+
+                    if position["type"] == "BUY":
+                        sl_distance = abs(entry - sl)
+                        exit_distance = abs(close_price - entry)
+                        ratio = exit_distance / sl_distance if sl_distance > 0 else 0
+                        if close_price > entry:
+                            # Profit
+                            pnl = position.get("risk_amount", 0.0) * ratio
+                        else:
+                            # Loss
+                            pnl = -position.get("risk_amount", 0.0) * ratio
+                    else:  # SELL
+                        sl_distance = abs(entry - sl)
+                        exit_distance = abs(entry - close_price)
+                        ratio = exit_distance / sl_distance if sl_distance > 0 else 0
+                        if close_price < entry:
+                            # Profit
+                            pnl = position.get("risk_amount", 0.0) * ratio
+                        else:
+                            # Loss
+                            pnl = -position.get("risk_amount", 0.0) * ratio
 
                 closed_position["pnl"] = pnl
+                closed_position["exit_pnl"] = pnl  # <--- Set exit_pnl on close
 
                 # Update account balance
                 self.current_balance += pnl
@@ -423,20 +443,31 @@ class TradeExecutor:
             else:
                 close_price = position["open_price"] * 1.0005  # Slight loss
 
-            # Calculate P&L
-            pip_size = 0.0001 if position["symbol"].endswith("USD") else 0.01
+            # Calculate P&L using the same approach as the update method
+            entry = position["open_price"]
+            sl = position["stop_loss"]
 
+            # For manual close, calculate proportionally to the distance from entry to exit
             if position["type"] == "BUY":
-                pips = (close_price - position["open_price"]) / pip_size
+                sl_distance = abs(entry - sl) if sl is not None else entry * 0.01
+                exit_distance = abs(close_price - entry)
+                ratio = exit_distance / sl_distance if sl_distance > 0 else 0
+                if close_price > entry:
+                    # Profit
+                    pnl = position.get("risk_amount", 0.0) * ratio
+                else:
+                    # Loss
+                    pnl = -position.get("risk_amount", 0.0) * ratio
             else:  # SELL
-                pips = (position["open_price"] - close_price) / pip_size
-
-            # Calculate monetary profit/loss
-            pnl = pips * position["size"] * 10  # Assuming $10 per pip per lot
-
-            # Apply commission
-            commission = (position["size"] / 100000) * self.commission_per_lot
-            pnl -= commission
+                sl_distance = abs(entry - sl) if sl is not None else entry * 0.01
+                exit_distance = abs(entry - close_price)
+                ratio = exit_distance / sl_distance if sl_distance > 0 else 0
+                if close_price < entry:
+                    # Profit
+                    pnl = position.get("risk_amount", 0.0) * ratio
+                else:
+                    # Loss
+                    pnl = -position.get("risk_amount", 0.0) * ratio
 
             # Update closed position
             closed_position = position.copy()
@@ -445,6 +476,7 @@ class TradeExecutor:
             closed_position["close_reason"] = "manual"
             closed_position["status"] = "CLOSED"
             closed_position["pnl"] = pnl
+            closed_position["exit_pnl"] = pnl  # <--- Set exit_pnl on close
 
             # Add to closed positions
             self.closed_positions.append(closed_position)
@@ -470,65 +502,6 @@ class TradeExecutor:
             "message": f"Closed {len(closed_details)} positions with total P&L: {total_pnl:.2f}",
             "closed_positions": closed_details,
         }
-
-    def _calculate_position_size(
-        self, symbol: str, entry_price: float, stop_loss: float, risk_percentage: float
-    ) -> float:
-        """
-        Calculate position size based on risk parameters.
-
-        Args:
-            symbol: Trading symbol
-            entry_price: Entry price
-            stop_loss: Stop loss level
-            risk_percentage: Risk percentage (0-100)
-
-        Returns:
-            Position size in units (standard lots)
-        """
-        # Get account balance (different for backtesting vs live)
-        if self.is_backtesting:
-            balance = self.current_balance
-        else:
-            # For live trading, we would get this from the API
-            balance = 10000.0  # Default value if we can't get it
-
-        # Calculate risk amount in currency
-        risk_amount = balance * (risk_percentage / 100.0)
-
-        # Calculate pip value of stop loss
-        pip_size = 0.0001 if symbol.endswith("USD") else 0.01
-
-        if entry_price == stop_loss:
-            logger.warning(
-                f"Entry price equals stop loss for {symbol}. Using default position size."
-            )
-            return 10000  # 0.1 standard lot as default
-
-        pip_distance = abs(entry_price - stop_loss) / pip_size
-
-        if pip_distance == 0:
-            logger.warning(
-                f"Zero pip distance for {symbol}. Using default position size."
-            )
-            return 10000  # 0.1 standard lot as default
-
-        # Calculate pip value
-        pip_value = 10.0  # Assuming $10 per pip per standard lot (100,000 units)
-
-        # Calculate position size in standard lots
-        position_size = risk_amount / (pip_distance * pip_value)
-
-        # Convert to units (standard lot = 100,000 units)
-        position_size_units = position_size * 100000
-
-        # Apply minimum and maximum position size constraints
-        min_size = 1000  # 0.01 standard lot
-        max_size = 500000  # 5 standard lots
-
-        position_size_units = max(min_size, min(position_size_units, max_size))
-
-        return position_size_units
 
     def _check_risk_management(self, signal: Dict[str, Any]) -> Tuple[bool, str]:
         """
@@ -664,7 +637,6 @@ class TradeExecutor:
         self,
         signal: Dict[str, Any],
         exit_parameters: Dict[str, Any],
-        position_size: float,
     ):
         """Record a new trade in performance tracking"""
         trade_record = {
@@ -673,7 +645,6 @@ class TradeExecutor:
             "symbol": signal.get("symbol", ""),
             "open_time": signal.get("timestamp", datetime.now()),
             "open_price": signal["price"],
-            "size": position_size,
             "stop_loss": exit_parameters.get("stop_loss"),
             "take_profit": exit_parameters.get("take_profit"),
             "status": "OPEN",
@@ -763,3 +734,48 @@ class TradeExecutor:
 
         winning_trades = sum(1 for t in closed_trades if t.get("pnl", 0) > 0)
         return (winning_trades / len(closed_trades)) * 100 if closed_trades else 0.0
+
+    def get_balance_history(self) -> List[float]:
+        """Return the account balance after each trade close (for backtest metrics)."""
+        history = [self.initial_balance]
+        balance = self.initial_balance
+        for pos in self.closed_positions:
+            balance += pos.get("exit_pnl", pos.get("pnl", 0.0))
+            history.append(balance)
+        return history
+
+    def get_backtest_metrics(self) -> Dict[str, Any]:
+        """Return key backtest metrics: max ROI, max drawdown, etc."""
+        balance_history = self.get_balance_history()
+        initial = self.initial_balance
+        max_balance = max(balance_history)
+        min_balance = min(balance_history)
+        final = balance_history[-1] if balance_history else initial
+
+        # ROI
+        roi = ((final - initial) / initial) * 100 if initial else 0.0
+        # Max ROI
+        max_roi = ((max_balance - initial) / initial) * 100 if initial else 0.0
+        # Max drawdown (percentage)
+        peak = balance_history[0]
+        max_dd = 0.0
+        for b in balance_history:
+            if b > peak:
+                peak = b
+            dd = (peak - b) / peak if peak else 0.0
+            if dd > max_dd:
+                max_dd = dd
+        max_drawdown_pct = max_dd * 100
+
+        return {
+            "initial_balance": initial,
+            "final_balance": final,
+            "max_balance": max_balance,
+            "min_balance": min_balance,
+            "roi_percent": roi,
+            "max_roi_percent": max_roi,
+            "max_drawdown_percent": max_drawdown_pct,
+            "balance_history": balance_history,
+            "total_trades": len(self.closed_positions),
+            "win_rate": self._calculate_win_rate(self.closed_positions),
+        }
