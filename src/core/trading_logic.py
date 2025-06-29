@@ -38,6 +38,7 @@ class TradingLogicEngine:
         regime: str,
         indicator_data: Dict[str, Dict[str, Dict[str, Any]]],
         price_data: Dict[str, pd.DataFrame],
+        symbol: str,
     ) -> Dict[str, Any]:
         """
         Generate trading signals based on the current regime and indicator values.
@@ -46,6 +47,7 @@ class TradingLogicEngine:
             regime: Current market regime (e.g., "TRENDING", "RANGING")
             indicator_data: Dictionary with calculated indicator values
             price_data: Dictionary with price data for different timeframes
+            symbol: Trading symbol
 
         Returns:
             Dictionary with trading signals and related information
@@ -66,7 +68,7 @@ class TradingLogicEngine:
 
         # Check entry conditions for BUY and SELL
         entry_signals = self._check_entry_conditions(
-            regime_logic, indicator_data, price_data
+            regime_logic, indicator_data, price_data, symbol
         )
         if entry_signals:
             result["entry_signals"] = entry_signals
@@ -88,6 +90,7 @@ class TradingLogicEngine:
         regime_logic: Dict[str, Any],
         indicator_data: Dict[str, Dict[str, Dict[str, Any]]],
         price_data: Dict[str, pd.DataFrame],
+        symbol: str,
     ) -> List[Dict[str, Any]]:
         """
         Check if entry conditions are met for the current regime.
@@ -96,6 +99,7 @@ class TradingLogicEngine:
             regime_logic: Trading logic for the current regime
             indicator_data: Dictionary with calculated indicator values
             price_data: Dictionary with price data for different timeframes
+            symbol: Trading symbol
 
         Returns:
             List of entry signals (can be empty if no conditions are met)
@@ -104,9 +108,6 @@ class TradingLogicEngine:
 
         # Get entry conditions from regime logic
         entries = regime_logic.get("entries", {})
-
-        # Current time for all signals in this cycle
-        # current_time = pd.Timestamp.now()
 
         # Check BUY conditions
         buy_conditions = entries.get("BUY", {}).get("conditions", [])
@@ -119,12 +120,13 @@ class TradingLogicEngine:
             entry_signals.append(
                 {
                     "type": "BUY",
+                    "symbol": symbol,
                     "timestamp": current_time,
                     "price": current_price,
                 }
             )
             logger.debug(
-                f"BUY signal generated at time {current_time} price {current_price}"
+                f"BUY signal generated for {symbol} at time {current_time} price {current_price}"
             )
 
         # Check SELL conditions
@@ -138,12 +140,13 @@ class TradingLogicEngine:
             entry_signals.append(
                 {
                     "type": "SELL",
+                    "symbol": symbol,
                     "timestamp": current_time,
                     "price": current_price,
                 }
             )
             logger.debug(
-                f"SELL signal generated at time {current_time} price {current_price}"
+                f"SELL signal generated for {symbol} at time {current_time} price {current_price}"
             )
 
         return entry_signals

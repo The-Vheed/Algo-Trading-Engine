@@ -98,10 +98,17 @@ class DataProvider:
         elif self.source_type == "live" and not trading_api:
             raise ValueError("trading_api must be provided for live data source")
 
-    async def stream_data(self) -> AsyncGenerator[Dict[str, pd.DataFrame], None]:
+    async def stream_data(
+        self,
+    ) -> AsyncGenerator[Tuple[Dict[str, pd.DataFrame], str], None]:
         """
-        Yields the latest data for each timeframe.
+        Yields the latest data for each timeframe along with the symbol.
         In CSV/historical_live mode, it simulates a stream. In live mode, it queries the API.
+
+        Returns:
+            A tuple containing:
+            - Dictionary of timeframe to DataFrame mappings
+            - Symbol string
         """
         # Load data if not already loaded
         if not self.data_loaded:
@@ -115,11 +122,13 @@ class DataProvider:
         if self.source_type in ["csv", "historical_live"]:
             # Use async for to iterate over the async generator __stream_datastore
             async for data in self.__stream_datastore():
-                yield data
+                # Remove symbol from the data dictionary and return it separately
+                yield data, self.symbol
         elif self.source_type == "live":
             # Use async for to iterate over the async generator __stream_live_data
             async for data in self.__stream_live_data():
-                yield data
+                # Remove symbol from the data dictionary and return it separately
+                yield data, self.symbol
 
     def __load_initial_csv_data(self) -> None:
         """
@@ -382,6 +391,7 @@ class DataProvider:
                 sliced_df = df.iloc[start_idx_pos:end_idx_pos].copy()
 
                 if not sliced_df.empty and sliced_df.index.max() <= current_master_time:
+                    # Don't set symbol attribute on DataFrame
                     yielded_data_this_round[tf] = sliced_df
                     # at_least_one_tf_updated = True
                     logger.debug(
@@ -395,6 +405,7 @@ class DataProvider:
             if (
                 yielded_data_this_round
             ):  # Only yield if data was prepared for at least one timeframe
+                # Don't add symbol to the yielded data
                 yield yielded_data_this_round
                 logger.debug(
                     f"Yielded data ending at {current_master_time}"
@@ -470,6 +481,7 @@ class DataProvider:
             )
 
         # Yield the initially fetched data snapshot
+        # Don't add symbol to data_store
         yield self.data_store.copy()
         logger.debug("Initial live data snapshot yielded.")
 
@@ -526,6 +538,7 @@ class DataProvider:
                     self.next_fetch_time[tf] = self.next_fetch_time[tf] + interval
 
             if updated_any:
+                # Don't add symbol to the yielded data
                 yield self.data_store.copy()
                 logger.debug(
                     f"Yielded live data snapshot at master time {current_master_time}"

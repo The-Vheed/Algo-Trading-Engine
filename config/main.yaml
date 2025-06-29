@@ -1,7 +1,7 @@
 name: "EUR_USD_Dynamic_Regime"
 version: "1.0"
 
-live: true
+live: false
 
 api:
   key: "XtejxmiwNHZqDFk"

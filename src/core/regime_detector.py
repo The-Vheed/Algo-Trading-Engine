@@ -22,8 +22,9 @@ class RegimeDetector:
         """
         self.config = config
         self.regime_rules = self._parse_regime_config()
-        self.current_regime = "NEUTRAL"  # Default regime
-        self.regime_history = []  # Keep track of regime changes
+        # Store regimes by symbol
+        self.current_regimes = {}  # {symbol: regime}
+        self.regime_history = {}  # {symbol: [(timestamp, regime), ...]}
 
         logger.debug(f"RegimeDetector initialized with {len(self.regime_rules)} rules")
         for rule in self.regime_rules:
@@ -41,13 +42,14 @@ class RegimeDetector:
             return []
 
     def detect_regime(
-        self, indicator_data: Dict[str, Dict[str, Dict[str, Any]]]
+        self, indicator_data: Dict[str, Dict[str, Dict[str, Any]]], symbol: str = ""
     ) -> str:
         """
         Detect the current market regime based on indicator data and configuration rules.
 
         Args:
             indicator_data: Dictionary with calculated indicator values
+            symbol: Trading symbol to track regime for
 
         Returns:
             String representing the detected market regime
@@ -80,11 +82,21 @@ class RegimeDetector:
             logger.debug("No regime rules matched, using NEUTRAL as default")
             new_regime = "NEUTRAL"
 
+        # Get current regime for this symbol
+        current_regime = self.current_regimes.get(symbol, "NEUTRAL")
+
         # Record regime change if it's different
-        if new_regime != self.current_regime:
-            logger.info(f"Regime changed from {self.current_regime} to {new_regime}")
-            self.regime_history.append((pd.Timestamp.now(), new_regime))
-            self.current_regime = new_regime
+        if new_regime != current_regime:
+            logger.info(
+                f"Regime for {symbol} changed from {current_regime} to {new_regime}"
+            )
+
+            # Initialize history for this symbol if not exists
+            if symbol not in self.regime_history:
+                self.regime_history[symbol] = []
+
+            self.regime_history[symbol].append((pd.Timestamp.now(), new_regime))
+            self.current_regimes[symbol] = new_regime
 
         return new_regime
 
@@ -195,78 +207,13 @@ class RegimeDetector:
         elif len(parts) == 3:
             # Standard format: "timeframe.indicator_name.property_name"
             timeframe, indicator_name, property_name = parts
-            value = (
-                indicator_data.get(timeframe, {})
-                .get(indicator_name, {})
-                .get(property_name, 0.0)
-            )
-            logger.debug(f"Retrieved value for {path}: {value}")
-            return value
-        elif len(parts) == 4:
-            # Extended format: "timeframe.indicator_name.property_name.sub_property"
-            timeframe, indicator_name, property_name, sub_property = parts
-
-            # Get the main property
-            value = (
-                indicator_data.get(timeframe, {})
-                .get(indicator_name, {})
-                .get(property_name, {})
-            )
-
-            # If it's a dict, get the sub-property
-            if isinstance(value, dict):
-                value = value.get(sub_property, 0.0)
-            else:
-                logger.warning(
-                    f"Property {property_name} is not a dict, cannot access {sub_property}"
-                )
-                return 0.0
-
-            logger.debug(f"Retrieved value for {path}: {value}")
-            return value
-        else:
-            logger.error(f"Invalid indicator path format: {path}")
-            return 0.0
-
-    def get_regime_history(self) -> List[tuple]:
-        """Return the history of regime changes"""
-        return self.regime_history
-
-    def get_current_regime(self) -> str:
-        """Return the current detected regime"""
-        return self.current_regime
-
-    def _get_indicator_value(
-        self, path: str, indicator_data: Dict[str, Dict[str, Dict[str, Any]]]
-    ) -> Any:
-        """
-        Get a specific indicator value from the data structure using a path like "M1.regime_adx.adx"
-
-        Args:
-            path: Path to the indicator value
-            indicator_data: Calculated indicator data
-
-        Returns:
-            The indicator value
-        """
-        parts = path.split(".")
-
-        # Handle different path lengths
-        if len(parts) == 1:
-            # Simple value like "25"
-            try:
-                return float(path)
-            except ValueError:
-                return path
-        elif len(parts) == 2:
-            # Something like "indicator.value"
-            indicator_name, property_name = parts
-            # This is a special case that shouldn't normally happen
-            logger.warning(f"Unusual indicator path format: {path}")
-            return 0.0
-        elif len(parts) == 3:
-            # Standard format: "timeframe.indicator_name.property_name"
-            timeframe, indicator_name, property_name = parts
+            # value = (
+            #     indicator_data.get(timeframe, {})
+            #     .get(indicator_name, {})
+            #     .get(property_name, 0.0)
+            # )
+            # logger.debug(f"Retrieved value for {path}: {value}")
+            # return value
         elif len(parts) == 4:
             # Extended format: "timeframe.indicator_name.property_name.sub_property"
             timeframe, indicator_name, property_name, sub_property = parts
@@ -302,10 +249,26 @@ class RegimeDetector:
         logger.debug(f"Retrieved value for {path}: {value}")
         return value
 
-    def get_regime_history(self) -> List[tuple]:
-        """Return the history of regime changes"""
-        return self.regime_history
+    def get_regime_history(self, symbol: str = "") -> List[tuple]:
+        """
+        Return the history of regime changes for a specific symbol.
 
-    def get_current_regime(self) -> str:
-        """Return the current detected regime"""
-        return self.current_regime
+        Args:
+            symbol: Symbol to get regime history for
+
+        Returns:
+            List of (timestamp, regime) tuples
+        """
+        return self.regime_history.get(symbol, [])
+
+    def get_current_regime(self, symbol: str = "") -> str:
+        """
+        Return the current detected regime for a specific symbol.
+
+        Args:
+            symbol: Symbol to get current regime for
+
+        Returns:
+            Current regime string
+        """
+        return self.current_regimes.get(symbol, "NEUTRAL")

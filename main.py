@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import pandas as pd
 
 from src.utils.logger import Logger
 
@@ -10,6 +11,7 @@ from src.core.data_provider import DataProvider
 from src.core.indicator_engine import IndicatorEngine
 from src.core.regime_detector import RegimeDetector
 from src.core.trading_logic import TradingLogicEngine
+from src.core.trade_execution import TradeExecutor
 
 
 DEFAULT_COUNT = 2  # Fallback default
@@ -121,6 +123,7 @@ async def main():
     # Variable to track any resources that need cleanup
     live_provider = None
     trading_api = None
+    trade_executor = None
 
     try:
         config = ConfigManager.load_config("config/main.yaml")
@@ -140,6 +143,15 @@ async def main():
         if not configured_timeframes:
             logger.error("No timeframes defined in the config file")
             return
+
+        # Define primary timeframe for position updates (shortest timeframe)
+        primary_timeframe = sorted(
+            configured_timeframes,
+            key=lambda tf: tf[0] + str(int(tf[1:]) if tf[1:].isdigit() else 0),
+        )[0]
+        logger.info(
+            f"Using {primary_timeframe} as primary timeframe for position updates"
+        )
 
         logger.debug(f"Using timeframes from config: {configured_timeframes}")
 
@@ -184,7 +196,18 @@ async def main():
         regime_detector = RegimeDetector(config)
         trading_logic_engine = TradingLogicEngine(config)
 
-        if not config["live"]:
+        # Initialize trade executor
+        is_backtesting = not config["live"]
+        trade_executor = TradeExecutor(
+            config=config,
+            trading_api=trading_api,
+            is_backtesting=is_backtesting,
+        )
+        logger.info(
+            f"Trade executor initialized in {'backtesting' if is_backtesting else 'live'} mode"
+        )
+
+        if is_backtesting:
             logger.info("Backtesting. Loading historical data...")
             try:
                 # Get start and end times from config
@@ -216,69 +239,129 @@ async def main():
                     base_path="data/historical" if data_source == "csv" else "",
                     symbol=configured_symbols[0],
                     timeframes=configured_timeframes,
-                    counts=timeframe_counts,  # Now passing the dictionary of counts
+                    counts=timeframe_counts,
                     trading_api=api_for_data,
                     start_time=start_time,
                     end_time=end_time,
                 )
 
                 data_stream = data_provider.stream_data()
-                async for data_dict in data_stream:
-                    for tf, df in data_dict.items():
-                        logger.debug(
-                            f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
-                            + str(df.tail(1))
-                        )
+                async for data_dict, current_symbol in data_stream:
+                    # Now current_symbol comes directly from the data provider
 
-                        # Assert length is correct
-                        assert (
-                            len(df) == data_provider.counts[tf]
-                        ), f"Data yielded {tf} data has length {len(df)}, expected {data_provider.counts[tf]}"
+                    # Log data for each timeframe
+                    for tf, df in data_dict.items():
+                        if isinstance(
+                            df, pd.DataFrame
+                        ):  # All entries should be DataFrames now
+                            logger.debug(
+                                f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
+                                + str(df.tail(1))
+                            )
+
+                            # Assert length is correct
+                            assert (
+                                len(df) == data_provider.counts[tf]
+                            ), f"Data yielded {tf} data has length {len(df)}, expected {data_provider.counts[tf]}"
+
+                    # Update trade executor with latest data to check SL/TP hits
+                    current_time = data_dict[primary_timeframe].index[-1]
+                    closed_positions = trade_executor.update(
+                        data_dict, primary_timeframe, current_symbol
+                    )
+
+                    # Log closed positions if any
+                    if closed_positions:
+                        logger.info(
+                            f"Closed {len(closed_positions)} positions at {current_time}"
+                        )
+                        for pos in closed_positions:
+                            logger.info(
+                                f"  {pos['type']} position closed at {pos['close_price']}. "
+                                f"Reason: {pos['close_reason']}. P&L: {pos['pnl']:.2f}"
+                            )
 
                     # Calculate indicators from the current data snapshot
                     indicators = indicator_engine.calculate_indicators(data_dict)
 
                     # Detect market regime
-                    current_regime = regime_detector.detect_regime(indicators)
-                    logger.debug(f"Current market regime: {current_regime}")
+                    current_regime = regime_detector.detect_regime(
+                        indicators, current_symbol
+                    )
+                    logger.debug(
+                        f"Current market regime for {current_symbol}: {current_regime}"
+                    )
 
                     # Generate trading signals based on the detected regime
                     signals = trading_logic_engine.generate_signals(
-                        current_regime, indicators, data_dict
+                        current_regime, indicators, data_dict, current_symbol
                     )
 
-                    # Log entry signals if any
+                    # Execute entry signals if any
                     if signals["entry_signals"]:
                         logger.info(
                             f"Entry signals generated: {len(signals['entry_signals'])}"
                         )
                         for signal in signals["entry_signals"]:
+                            # Ensure symbol is set in the signal
+                            if "symbol" not in signal:
+                                signal["symbol"] = current_symbol
+
                             logger.info(
-                                f"  {signal['type']} signal at time {signal['timestamp']} price {signal['price']}"
+                                f"  {signal['type']} signal for {signal['symbol']} at time {signal['timestamp']} price {signal['price']}"
                             )
 
+                            # Find matching exit signal
+                            exit_params = next(
+                                (
+                                    exit_signal
+                                    for exit_signal in signals["exit_signals"]
+                                    if exit_signal["entry_signal_type"]
+                                    == signal["type"]
+                                ),
+                                {"stop_loss": None, "take_profit": None},
+                            )
+
+                            # Execute signal
+                            execution_result = await trade_executor.execute_signal(
+                                signal=signal,
+                                exit_parameters=exit_params,
+                                current_time=current_time,
+                            )
+
+                            if execution_result.get("success", False):
+                                logger.info(
+                                    f"Successfully executed {signal['type']} order"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to execute {signal['type']} order: {execution_result.get('message', 'unknown error')}"
+                                )
+
+                    # Log exit signals if any
                     if signals["exit_signals"]:
-                        logger.info(
+                        logger.debug(
                             f"Exit levels calculated: {len(signals['exit_signals'])}"
                         )
                         for signal in signals["exit_signals"]:
-                            logger.info(
+                            logger.debug(
                                 f"  {signal['entry_signal_type']} - SL: {signal['stop_loss']}, TP: {signal['take_profit']}"
                             )
 
-                    logger.debug("Calculated indicators:")
-                    for timeframe, indicators_dict in indicators.items():
-                        logger.debug(f"Timeframe: {timeframe}")
-                        for indicator_name, indicator_values in indicators_dict.items():
-                            current_values = {
-                                k: v
-                                for k, v in indicator_values.items()
-                                if k != "series"
-                            }
-                            logger.debug(f"  {indicator_name}: {current_values}")
+                    # Log performance metrics periodically
+                    metrics = trade_executor.get_performance_metrics()
+                    logger.debug(f"Current balance: {metrics['balance']}")
+                    logger.debug(f"Open positions: {metrics['open_positions']}")
+                    logger.debug(f"Daily P&L: {metrics['daily']['pnl']:.2f}")
+
+                # Close all positions at the end of backtesting
+                final_result = await trade_executor.close_all_positions()
+                logger.info(
+                    f"Backtesting complete. Final balance: {trade_executor.current_balance:.2f}"
+                )
 
             except Exception as e:
-                logger.error(f"Error during csv data stream: {e}")
+                logger.error(f"Error during backtesting: {e}")
                 import traceback
 
                 traceback.print_exc()
@@ -298,33 +381,53 @@ async def main():
                         return
                     logger.info("Trading API connected.")
 
+                # Fetch account info to get current balance and positions
+                account_info = await trading_api.get_account_info()
+                logger.info(f"Account balance: {account_info.get('balance', 0.0)}")
+                logger.info(f"Open positions: {account_info.get('positions_count', 0)}")
+
                 live_provider = DataProvider(
                     source_type="live",
-                    trading_api=trading_api,  # Pass the trading API object
+                    trading_api=trading_api,
                     symbol=configured_symbols[0],
                     timeframes=configured_timeframes,
-                    counts=timeframe_counts,  # Now passing the dictionary of counts
+                    counts=timeframe_counts,
                 )
 
                 live_stream = live_provider.stream_data()
-                async for data_dict in live_stream:
+                async for data_dict, current_symbol in live_stream:
+                    # Now current_symbol comes directly from the data provider
+
+                    # Log data for each timeframe
                     for tf, df in data_dict.items():
-                        logger.debug(
-                            f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
-                            + str(df.tail(1))
-                        )
-                        assert (
-                            len(df) == live_provider.counts[tf]
-                        ), f"Live yielded {tf} data has length {len(df)}, expected {live_provider.counts[tf]}"
+                        if isinstance(
+                            df, pd.DataFrame
+                        ):  # Skip non-DataFrame entries like 'symbol'
+                            logger.debug(
+                                f"{tf} Length: {len(df)}\n{tf} Data (Last 1):\n"
+                                + str(df.tail(1))
+                            )
+                            assert (
+                                len(df) == live_provider.counts[tf]
+                            ), f"Live yielded {tf} data has length {len(df)}, expected {live_provider.counts[tf]}"
 
+                    # Calculate indicators
                     indicators = indicator_engine.calculate_indicators(data_dict)
-                    current_regime = regime_detector.detect_regime(indicators)
-                    logger.debug(f"Current market regime (live): {current_regime}")
 
+                    # Detect market regime
+                    current_regime = regime_detector.detect_regime(
+                        indicators, current_symbol
+                    )
+                    logger.debug(
+                        f"Current market regime (live) for {current_symbol}: {current_regime}"
+                    )
+
+                    # Generate trading signals
                     signals = trading_logic_engine.generate_signals(
                         current_regime, indicators, data_dict
                     )
 
+                    # Execute entry signals if any
                     if signals["entry_signals"]:
                         logger.info(
                             f"Entry signals generated: {len(signals['entry_signals'])}"
@@ -334,15 +437,35 @@ async def main():
                                 f"  {signal['type']} signal at time {signal['timestamp']} price {signal['price']}"
                             )
 
-                    if signals["exit_signals"]:
-                        logger.info(
-                            f"Exit levels calculated: {len(signals['exit_signals'])}"
-                        )
-                        for signal in signals["exit_signals"]:
-                            logger.info(
-                                f"  {signal['entry_signal_type']} - SL: {signal['stop_loss']}, TP: {signal['take_profit']}"
+                            # Find matching exit signal
+                            exit_params = next(
+                                (
+                                    exit_signal
+                                    for exit_signal in signals["exit_signals"]
+                                    if exit_signal["entry_signal_type"]
+                                    == signal["type"]
+                                ),
+                                {"stop_loss": None, "take_profit": None},
                             )
 
+                            # Execute signal
+                            current_time = data_dict[primary_timeframe].index[-1]
+                            execution_result = await trade_executor.execute_signal(
+                                signal=signal,
+                                exit_parameters=exit_params,
+                                current_time=current_time,
+                            )
+
+                            if execution_result.get("success", False):
+                                logger.info(
+                                    f"Successfully executed {signal['type']} order"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Failed to execute {signal['type']} order: {execution_result.get('message', 'unknown error')}"
+                                )
+
+                    # Log calculated indicators for debugging
                     logger.debug("Calculated indicators (live):")
                     for timeframe, indicators_dict in indicators.items():
                         logger.debug(f"Timeframe: {timeframe}")
@@ -354,11 +477,19 @@ async def main():
                             }
                             logger.debug(f"  {indicator_name}: {current_values}")
 
+            except KeyboardInterrupt:
+                logger.info(
+                    "Keyboard interrupt detected. Closing positions and shutting down..."
+                )
+                if trade_executor:
+                    await trade_executor.close_all_positions()
+
             except Exception as e:
                 logger.error(f"Error during live data stream: {e}")
                 import traceback
 
                 traceback.print_exc()
+
             finally:
                 # Disconnect the trading API directly
                 if trading_api and hasattr(trading_api, "disconnect"):
@@ -367,11 +498,15 @@ async def main():
 
     except KeyboardInterrupt:
         logger.info("\nKeyboard interrupt detected. Shutting down gracefully...")
+        if trade_executor:
+            await trade_executor.close_all_positions()
+
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         import traceback
 
         traceback.print_exc()
+
     finally:
         logger.info("\nStopped Trading System")
         # Disconnect the trading API directly
