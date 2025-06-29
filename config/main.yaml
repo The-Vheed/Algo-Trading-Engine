@@ -16,10 +16,10 @@ trading_api:
 
 backtesting:
   data_source: "historical_live"
-  start: "2025-06-28T00:00:00"
+  start: "2025-01-28T00:00:00"
   end: "2025-06-28T14:00:00"
   initial_balance: 10000
-  commission_per_lot: 7.0
+  commission_per_lot: 0.0
   spread_pips: 1.2
   output_folder: "backtest_results"      # <--- Add this line
   save_datastore: true                   # <--- Add this line
@@ -32,13 +32,13 @@ strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
   symbols: ["Volatility 25 Index", "EURUSD"]
-  timeframes: ["M1", "M5"]
+  timeframes: ["H1", "H4"]
 
   # ----------------------------------------------------------------------------------
   # 1. INDICATORS BY TIMEFRAME
   # ----------------------------------------------------------------------------------
   indicators:
-    M1:
+    H1:
       - name: "regime_adx"
         type: "ADX"
         params: { period: 14 }
@@ -51,7 +51,7 @@ strategy:
       - name: "trend_ema_slow"
         type: "EMA"
         params: { period: 200 }
-    M5:
+    H4:
       - name: "trend_ema_fast"
         type: "EMA"
         params: { period: 20 }
@@ -81,12 +81,12 @@ strategy:
     rules:
       - name: "TRENDING"
         conditions:
-          - "M1.regime_adx.adx > 25"
-          - "M1.volatility_bbw.width.value > M1.volatility_bbw.width.percentile_75"
+          - "H1.regime_adx.adx > 25"
+          - "H1.volatility_bbw.width.value > H1.volatility_bbw.width.percentile_75"
       - name: "RANGING"
         conditions:
-          - "M1.regime_adx.adx < 20"
-          - "M1.volatility_bbw.width.value < M1.volatility_bbw.width.percentile_25"
+          - "H1.regime_adx.adx < 20"
+          - "H1.volatility_bbw.width.value < H1.volatility_bbw.width.percentile_25"
       - name: "NEUTRAL"
         conditions:
           - "default"
@@ -99,21 +99,21 @@ strategy:
       entries:
         BUY:
           conditions:
-            - "M1.trend_ema_fast.value > M1.trend_ema_slow.value"
-            - "M5.trend_ema_fast.value > M5.trend_ema_slow.value"
-            - "M5.trend_macd.histogram > 0"
+            - "H1.trend_ema_fast.value > H1.trend_ema_slow.value"
+            - "H4.trend_ema_fast.value > H4.trend_ema_slow.value"
+            - "H4.trend_macd.histogram > 0"
             - "price.close > price.open" # Additional bullish confirmation
         SELL:
           conditions:
-            - "M1.trend_ema_fast.value < M1.trend_ema_slow.value"
-            - "M5.trend_ema_fast.value < M5.trend_ema_slow.value"
-            - "M5.trend_macd.histogram < 0"
+            - "H1.trend_ema_fast.value < H1.trend_ema_slow.value"
+            - "H4.trend_ema_fast.value < H4.trend_ema_slow.value"
+            - "H4.trend_macd.histogram < 0"
             - "price.close < price.open" # Additional bearish confirmation
       exits:
         BUY:
           stop_loss:
             method: "ATR"
-            indicator: "M5.trend_atr.value"
+            indicator: "H4.trend_atr.value"
             multiplier: 2.0
           take_profit:
             method: "risk_reward"
@@ -121,7 +121,7 @@ strategy:
         SELL:
           stop_loss:
             method: "ATR"
-            indicator: "M5.trend_atr.value"
+            indicator: "H4.trend_atr.value"
             multiplier: 2.0
           take_profit:
             method: "risk_reward"
@@ -132,9 +132,9 @@ strategy:
     #     BUY:
     #       conditions:
     #         # Replace vague "near" with specific range check
-    #         - "price.low >= M5.range_sr.S1 * 0.9995" # Within 0.05% below support
-    #         - "price.low <= M5.range_sr.S1 * 1.0005" # Within 0.05% above support
-    #         - "M5.range_stoch.k < 20"
+    #         - "price.low >= H4.range_sr.S1 * 0.9995" # Within 0.05% below support
+    #         - "price.low <= H4.range_sr.S1 * 1.0005" # Within 0.05% above support
+    #         - "H4.range_stoch.k < 20"
     #         # Replace vague "candlestick is bullish" with specific conditions
     #         - "price.close > price.open" # Bullish candle
     #         - "price.close > price.low + ((price.high - price.low) * 0.6)" # Strong close in upper portion
@@ -142,9 +142,9 @@ strategy:
     #     SELL:
     #       conditions:
     #         # Replace vague "near" with specific range check
-    #         - "price.high <= M5.range_sr.R1 * 1.0005" # Within 0.05% above resistance
-    #         - "price.high >= M5.range_sr.R1 * 0.9995" # Within 0.05% below resistance
-    #         - "M5.range_stoch.k > 80"
+    #         - "price.high <= H4.range_sr.R1 * 1.0005" # Within 0.05% above resistance
+    #         - "price.high >= H4.range_sr.R1 * 0.9995" # Within 0.05% below resistance
+    #         - "H4.range_stoch.k > 80"
     #         # Replace vague "candlestick is bearish" with specific conditions
     #         - "price.close < price.open" # Bearish candle
     #         - "price.close < price.high - ((price.high - price.low) * 0.6)" # Strong close in lower portion
@@ -153,39 +153,39 @@ strategy:
     #     BUY:
     #       stop_loss:
     #         method: "ATR"
-    #         indicator: "M5.range_atr"
+    #         indicator: "H4.range_atr"
     #         multiplier: 1.5
     #       take_profit:
     #         method: "level"
     #         target: "resistance"
-    #         level: "M5.range_sr.R1"
+    #         level: "H4.range_sr.R1"
     #     SELL:
     #       stop_loss:
     #         method: "ATR"
-    #         indicator: "M5.range_atr"
+    #         indicator: "H4.range_atr"
     #         multiplier: 1.5
     #       take_profit:
     #         method: "level"
     #         target: "support"
-    #         level: "M5.range_sr.S1"
+    #         level: "H4.range_sr.S1"
     
     # NEUTRAL:
     #   entries:
     #     BUY:
     #       conditions:
-    #         - "M1.trend_ema_fast.value > M1.trend_ema_slow.value"
-    #         - "M5.trend_ema_fast.value > M5.trend_ema_slow.value"
-    #         - "M5.range_stoch.k < 20"
+    #         - "H1.trend_ema_fast.value > H1.trend_ema_slow.value"
+    #         - "H4.trend_ema_fast.value > H4.trend_ema_slow.value"
+    #         - "H4.range_stoch.k < 20"
     #     SELL:
     #       conditions:
-    #         - "M1.trend_ema_fast.value < M1.trend_ema_slow.value"
-    #         - "M5.trend_ema_fast.value < M5.trend_ema_slow.value"
-    #         - "M5.range_stoch.k > 80"
+    #         - "H1.trend_ema_fast.value < H1.trend_ema_slow.value"
+    #         - "H4.trend_ema_fast.value < H4.trend_ema_slow.value"
+    #         - "H4.range_stoch.k > 80"
     #   exits:
     #     BUY:
     #       stop_loss:
     #         method: "ATR"
-    #         indicator: "M5.trend_atr.value"
+    #         indicator: "H4.trend_atr.value"
     #         multiplier: 1.0
     #       take_profit:
     #         method: "risk_reward"
@@ -193,7 +193,7 @@ strategy:
     #     SELL:
     #       stop_loss:
     #         method: "ATR"
-    #         indicator: "M5.trend_atr.value"
+    #         indicator: "H4.trend_atr.value"
     #         multiplier: 1.0
     #       take_profit:
     #         method: "risk_reward"
@@ -203,25 +203,25 @@ strategy:
   # 4. RISK MANAGEMENT
   # ----------------------------------------------------------------------------------
   risk_management:
-    risk_per_trade: 2.0  # Percentage of account equity to risk per trade (0.5-2% recommended)
+    risk_per_trade: 1.0  # Percentage of account equity to risk per trade (0.5-2% recommended)
     
     # Trade Management
     trade_management:
-      max_concurrent_trades: 5  # Maximum number of open trades at any time
-      allow_opposing_trades: false  # Whether to allow both long and short positions simultaneously
+      max_concurrent_trades: 3  # Maximum number of open trades at any time
+      allow_opposing_trades: true  # Whether to allow both long and short positions simultaneously
     
     # Drawdown Protection
     drawdown_protection:
       daily_loss_limit:
         enabled: true
-        percentage: 3.0  # Stop trading if daily loss exceeds 3% of account equity
+        percentage: 5.0  # Stop trading if daily loss exceeds 5% of account equity
       weekly_loss_limit:
         enabled: true
-        percentage: 5.0  # Stop trading if weekly loss exceeds 5% of account equity
+        percentage: 10.0  # Stop trading if weekly loss exceeds 10% of account equity
       monthly_loss_limit:
         enabled: true
-        percentage: 10.0  # Stop trading if monthly loss exceeds 10% of account equity
-      max_consecutive_losses: 5  # Pause trading after 5 consecutive losses
+        percentage: 20.0  # Stop trading if monthly loss exceeds 20% of account equity
+      max_consecutive_losses: 15  # Pause trading after 15 consecutive losses
 
     # Time Filters
     time_filters:
