@@ -39,8 +39,8 @@ class MT5FastAPI:
             if self.session is None:
                 self.session = aiohttp.ClientSession()
 
-            # Test with a simple positions_bias call
-            response = await self.get_positions_bias()
+            # Test with a simple account_info call instead of positions_bias
+            response = await self.get_account_info()
             logger.info("Successfully connected to MT5 FastAPI")
             return True
         except Exception as e:
@@ -138,6 +138,9 @@ class MT5FastAPI:
                 "bias": raw_response.get("bias"),
                 "positions_count": raw_response.get("positions_count", 0),
                 "last_trade": raw_response.get("last_trade"),
+                "balance": raw_response.get(
+                    "balance", 0.0
+                ),  # Add balance field from account_info
                 "raw_response": raw_response,
             }
         except Exception as e:
@@ -146,6 +149,37 @@ class MT5FastAPI:
                 "bias": None,
                 "positions_count": 0,
                 "last_trade": None,
+                "balance": 0.0,  # Add default balance
+                "raw_response": raw_response,
+            }
+
+    def _parse_account_info_response(
+        self, raw_response: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Parse account information response.
+
+        Args:
+            raw_response: Raw JSON response from account_info endpoint
+
+        Returns:
+            Dict containing parsed account information
+        """
+        try:
+            return {
+                "bias": raw_response.get("bias"),
+                "positions_count": raw_response.get("positions_count", 0),
+                "last_trade": raw_response.get("last_trade"),
+                "balance": raw_response.get("balance", 0.0),
+                "raw_response": raw_response,
+            }
+        except Exception as e:
+            logger.error(f"Error parsing account info response: {e}")
+            return {
+                "bias": None,
+                "positions_count": 0,
+                "last_trade": None,
+                "balance": 0.0,
                 "raw_response": raw_response,
             }
 
@@ -164,7 +198,6 @@ class MT5FastAPI:
         try:
             result = {
                 "symbol": raw_response.get("symbol", ""),
-                "balance": raw_response.get("balance", 0.0),
                 "data": {},
                 "raw_response": raw_response,
             }
@@ -193,7 +226,6 @@ class MT5FastAPI:
             logger.error(f"Error parsing price data response: {e}")
             return {
                 "symbol": "",
-                "balance": 0.0,
                 "data": {},
                 "raw_response": raw_response,
             }
@@ -248,7 +280,7 @@ class MT5FastAPI:
                 columns=capitalized_columns,
             )
 
-            # Ensure index name is "Date" 
+            # Ensure index name is "Date"
             df.index.name = "Date"
 
             # Ensure OHLC columns are float type
@@ -418,16 +450,27 @@ class MT5FastAPI:
         raw_response = await self._make_request("/price_data", data)
         return self._parse_price_data_response(raw_response)
 
+    async def get_account_info(self) -> Dict[str, Any]:
+        """
+        Get information about the trading account including balance and trading bias.
+
+        Returns:
+            Dict[str, Any]: Parsed account information
+        """
+        data = {"access_key": self.access_key}
+        raw_response = await self._make_request("/account_info", data)
+        return self._parse_account_info_response(raw_response)
+
     async def get_positions_bias(self) -> Dict[str, Any]:
         """
         Get information about current trading bias based on open positions.
+        Note: This method is kept for backward compatibility and now calls get_account_info().
 
         Returns:
             Dict[str, Any]: Parsed trading bias information
         """
-        data = {"access_key": self.access_key}
-        raw_response = await self._make_request("/positions_bias", data)
-        return self._parse_positions_response(raw_response)
+        # Call the new account_info endpoint instead
+        return await self.get_account_info()
 
     async def pull_repository(self) -> Dict[str, Any]:
         """

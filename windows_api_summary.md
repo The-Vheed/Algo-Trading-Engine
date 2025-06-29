@@ -84,16 +84,15 @@ All endpoints require an `access_key` parameter in the request body. This key mu
     "data": {
       "M5": { /* Price data for M5 timeframe */ },
       "H1": { /* Price data for H1 timeframe */ }
-    },
-    "balance": 10000.00
+    }
   }
   ```
 
 ### Trading Analysis
 
-#### 5. Get Positions Bias
-- **Endpoint**: POST /positions_bias
-- **Description**: Returns information about the current trading bias based on open positions
+#### 5. Get Account Information
+- **Endpoint**: POST /account_info
+- **Description**: Returns account information including balance and current trading bias
 - **Request Body**:
   ```json
   {
@@ -105,7 +104,8 @@ All endpoints require an `access_key` parameter in the request body. This key mu
   {
     "bias": "BUY", // or "SELL" or null if balanced/no positions
     "positions_count": 3,
-    "last_trade": [1642528000, 123.45] // [timestamp, profit]
+    "last_trade": [1642528000, 123.45], // [timestamp, profit]
+    "balance": 10000.00
   }
   ```
 
@@ -172,15 +172,12 @@ def place_buy_order():
     response = requests.post(endpoint, json=data)
     return response.json()
 
-# Example: Get price data
-def get_price_data():
-    endpoint = f"{BASE_URL}/price_data"
+# Example: Get account information
+def get_account_info():
+    endpoint = f"{BASE_URL}/account_info"
     
     data = {
-        "access_key": ACCESS_KEY,
-        "symbol": "Volatility 25 Index",
-        "timeframes": ["M5", "H1"],
-        "count": 100
+        "access_key": ACCESS_KEY
     }
     
     response = requests.post(endpoint, json=data)

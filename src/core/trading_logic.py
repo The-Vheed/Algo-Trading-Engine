@@ -123,7 +123,7 @@ class TradingLogicEngine:
                     "price": current_price,
                 }
             )
-            logger.info(
+            logger.debug(
                 f"BUY signal generated at time {current_time} price {current_price}"
             )
 
@@ -142,7 +142,7 @@ class TradingLogicEngine:
                     "price": current_price,
                 }
             )
-            logger.info(
+            logger.debug(
                 f"SELL signal generated at time {current_time} price {current_price}"
             )
 
@@ -219,7 +219,7 @@ class TradingLogicEngine:
                 }
             )
 
-            logger.info(
+            logger.debug(
                 f"{signal_type} exit levels - SL: {stop_loss}, TP: {take_profit}"
             )
 
