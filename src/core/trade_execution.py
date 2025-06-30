@@ -1,6 +1,6 @@
 import asyncio
 from typing import Dict, List, Any, Optional, Tuple, Union
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as dt_time
 import pandas as pd
 import uuid
 
@@ -75,6 +75,11 @@ class TradeExecutor:
         # Flag to track if performance periods have been initialized with actual data
         self.performance_initialized = False
 
+        # Trading session filters
+        self.time_filters = config.get("strategy", {}).get("risk_management", {}).get("time_filters", {})
+        self.sessions = self.time_filters.get("sessions", []) if self.time_filters else []
+        self._parsed_sessions = self._parse_sessions(self.sessions)
+
         logger.info(
             f"TradeExecutor initialized. Mode: {'Backtesting' if is_backtesting else 'Live Trading'}"
         )
@@ -87,6 +92,47 @@ class TradeExecutor:
             Tuple of (week_number, year)
         """
         return dt.isocalendar()[1], dt.isocalendar()[0]
+
+    def _parse_sessions(self, sessions_config):
+        """
+        Parse session configs into tuples of (enabled, start_time, end_time, name)
+        """
+        parsed = []
+        for session in sessions_config:
+            enabled = session.get("enabled", False)
+            name = session.get("name", "")
+            start = session.get("start_time", "00:00")
+            end = session.get("end_time", "23:59")
+            try:
+                start_time = datetime.strptime(start, "%H:%M").time()
+                end_time = datetime.strptime(end, "%H:%M").time()
+            except Exception:
+                start_time = dt_time(0, 0)
+                end_time = dt_time(23, 59)
+            parsed.append((enabled, start_time, end_time, name))
+        return parsed
+
+    def _is_within_trading_session(self, dt: Optional[datetime] = None) -> bool:
+        """
+        Check if the given datetime is within any enabled trading session.
+        If no sessions are enabled, always return True.
+        """
+        if not self._parsed_sessions:
+            return True
+        if dt is None:
+            dt = datetime.now()
+        now_time = dt.time()
+        for enabled, start, end, _ in self._parsed_sessions:
+            if not enabled:
+                continue
+            if start <= end:
+                if start <= now_time < end:
+                    return True
+            else:
+                # Overnight session (e.g., 22:00-06:00)
+                if now_time >= start or now_time < end:
+                    return True
+        return False
 
     async def execute_signal(
         self,
@@ -115,6 +161,12 @@ class TradeExecutor:
         if not can_trade:
             logger.warning(f"Trade rejected: {rejection_reason}")
             return {"success": False, "message": f"Trade rejected: {rejection_reason}"}
+
+        # Trading session filter
+        dt_to_check = current_time or signal.get("timestamp", datetime.now())
+        if not self._is_within_trading_session(dt_to_check):
+            logger.info("Trade rejected: Outside allowed trading sessions.")
+            return {"success": False, "message": "Trade rejected: Outside trading session"}
 
         # Adjust price for spread if backtesting
         adjusted_price = signal["price"]
