@@ -9,3 +9,4 @@ aiohttp
 python-deriv-api
 # pandas_ta
 ta
+scipy

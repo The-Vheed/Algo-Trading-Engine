@@ -1,4 +1,5 @@
 import pandas as pd
+import re
 from typing import Dict, List, Any, Optional, Tuple
 from src.utils.logger import Logger
 from datetime import datetime, timedelta
@@ -359,6 +360,52 @@ class TradingLogicEngine:
         # All conditions passed
         return True
 
+    def _evaluate_expression(
+        self, expression: str, indicator_data: Dict[str, Dict[str, Dict[str, Any]]]
+    ) -> float:
+        """
+        Evaluate a simple arithmetic expression which can contain an indicator path.
+        e.g., "H1;range_sr;S1 * 0.992", "25.0", or "H1;some;value"
+        """
+        expression = expression.strip()
+
+        # First try to parse as a float for numeric literals
+        try:
+            return float(expression)
+        except (ValueError, TypeError):
+            pass
+
+        # Check for arithmetic operations (order matters for proper parsing)
+        operators = ["*", "/", "+", "-"]
+        for op in operators:
+            if op in expression:
+                # Split only on the first occurrence of the operator
+                parts = expression.split(op, 1)
+                left = parts[0].strip()
+                right = parts[1].strip()
+
+                # Recursively evaluate both sides
+                try:
+                    left_val = self._evaluate_expression(left, indicator_data)
+                    right_val = self._evaluate_expression(right, indicator_data)
+
+                    if op == "*":
+                        return left_val * right_val
+                    elif op == "/":
+                        return left_val / right_val if right_val != 0 else float("inf")
+                    elif op == "+":
+                        return left_val + right_val
+                    elif op == "-":
+                        return left_val - right_val
+                except Exception as e:
+                    logger.error(
+                        f"Error evaluating expression '{expression}': {str(e)}"
+                    )
+                    return 0.0
+
+        # If no operators, get the indicator value
+        return self._get_indicator_value(expression, indicator_data)
+
     def _evaluate_condition(
         self, condition: str, indicator_data: Dict[str, Dict[str, Dict[str, Any]]]
     ) -> bool:
@@ -368,52 +415,26 @@ class TradingLogicEngine:
         logger.debug(f"Evaluating condition: {condition}")
 
         try:
-            # Handle basic comparison operators
-            if ">" in condition:
-                left, right = condition.split(">")
-                left_val = self._get_indicator_value(left.strip(), indicator_data)
-                right_val = (
-                    self._get_indicator_value(right.strip(), indicator_data)
-                    if "." in right.strip()
-                    else float(right.strip())
-                )
-                return left_val > right_val
-            elif "<" in condition:
-                left, right = condition.split("<")
-                left_val = self._get_indicator_value(left.strip(), indicator_data)
-                right_val = (
-                    self._get_indicator_value(right.strip(), indicator_data)
-                    if "." in right.strip()
-                    else float(right.strip())
-                )
-                return left_val < right_val
-            elif ">=" in condition:
-                left, right = condition.split(">=")
-                left_val = self._get_indicator_value(left.strip(), indicator_data)
-                right_val = (
-                    self._get_indicator_value(right.strip(), indicator_data)
-                    if "." in right.strip()
-                    else float(right.strip())
-                )
-                return left_val >= right_val
-            elif "<=" in condition:
-                left, right = condition.split("<=")
-                left_val = self._get_indicator_value(left.strip(), indicator_data)
-                right_val = (
-                    self._get_indicator_value(right.strip(), indicator_data)
-                    if "." in right.strip()
-                    else float(right.strip())
-                )
-                return left_val <= right_val
-            elif "==" in condition:
-                left, right = condition.split("==")
-                left_val = self._get_indicator_value(left.strip(), indicator_data)
-                right_val = (
-                    self._get_indicator_value(right.strip(), indicator_data)
-                    if "." in right.strip()
-                    else float(right.strip())
-                )
-                return left_val == right_val
+            # Define all comparison operators to check (order matters for proper parsing)
+            operators = [">=", "<=", "==", ">", "<"]
+
+            for op in operators:
+                if op in condition:
+                    left, right = condition.split(op, 1)
+                    # Evaluate both sides as potential expressions
+                    left_val = self._evaluate_expression(left.strip(), indicator_data)
+                    right_val = self._evaluate_expression(right.strip(), indicator_data)
+
+                    if op == ">":
+                        return left_val > right_val
+                    elif op == "<":
+                        return left_val < right_val
+                    elif op == ">=":
+                        return left_val >= right_val
+                    elif op == "<=":
+                        return left_val <= right_val
+                    elif op == "==":
+                        return left_val == right_val
 
             logger.warning(f"Unsupported condition format: {condition}")
             return False
@@ -434,7 +455,7 @@ class TradingLogicEngine:
         except (ValueError, TypeError):
             pass
 
-        parts = path.split(".")
+        parts = path.split(";")
 
         # Handle different path lengths
         if len(parts) == 1:

@@ -32,13 +32,13 @@ strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
   symbols: ["Volatility 25 Index", "EURUSD"]
-  timeframes: ["H1", "H4"]
+  timeframes: ["M15", "H1"]
 
   # ----------------------------------------------------------------------------------
   # 1. INDICATORS BY TIMEFRAME
   # ----------------------------------------------------------------------------------
   indicators:
-    H1:
+    M15:
       - name: "regime_adx"
         type: "ADX"
         params: { period: 14 }
@@ -51,7 +51,7 @@ strategy:
       - name: "trend_ema_slow"
         type: "EMA"
         params: { period: 200 }
-    H4:
+    H1:
       - name: "trend_ema_fast"
         type: "EMA"
         params: { period: 20 }
@@ -64,10 +64,13 @@ strategy:
       - name: "trend_atr"
         type: "ATR"
         params: { period: 14 }
-      # - name: "range_stoch"
-      #   type: "STOCH"
-      #   params: { k_period: 14, d_period: 3, smoothing: 3 }
-      # - name: "range_sr"
+      - name: "range_sr"
+        type: "S&R"
+        params: { distance: 10, prominence: 0.025 }
+      - name: "range_stoch"
+        type: "STOCH"
+        params: { k_period: 14, d_period: 3, smoothing: 3 }
+      # - name: "range_pivot"
       #   type: "PIVOT"
       #   params: { method: "classic" }
       - name: "range_atr"
@@ -81,12 +84,12 @@ strategy:
     rules:
       - name: "TRENDING"
         conditions:
-          - "H1.regime_adx.adx > 25"
-          - "H1.volatility_bbw.width.value > H1.volatility_bbw.width.percentile_75"
+          - "M15;regime_adx;adx > 25"
+          - "M15;volatility_bbw;width;value > M15;volatility_bbw;width;percentile_75"
       - name: "RANGING"
         conditions:
-          - "H1.regime_adx.adx < 20"
-          - "H1.volatility_bbw.width.value < H1.volatility_bbw.width.percentile_25"
+          - "M15;regime_adx;adx < 20"
+          - "M15;volatility_bbw;width;value < M15;volatility_bbw;width;percentile_25"
       - name: "NEUTRAL"
         conditions:
           - "default"
@@ -99,116 +102,93 @@ strategy:
       entries:
         BUY:
           conditions:
-            - "H1.trend_ema_fast.value > H1.trend_ema_slow.value"
-            - "H4.trend_ema_fast.value > H4.trend_ema_slow.value"
-            - "H4.trend_macd.histogram > 0"
+            - "M15;trend_ema_fast;value > M15;trend_ema_slow;value"
+            - "H1;trend_ema_fast;value > H1;trend_ema_slow;value"
+            - "H1;trend_macd;histogram > 0"
             - "price.close > price.open" # Additional bullish confirmation
         SELL:
           conditions:
-            - "H1.trend_ema_fast.value < H1.trend_ema_slow.value"
-            - "H4.trend_ema_fast.value < H4.trend_ema_slow.value"
-            - "H4.trend_macd.histogram < 0"
+            - "M15;trend_ema_fast;value < M15;trend_ema_slow;value"
+            - "H1;trend_ema_fast;value < H1;trend_ema_slow;value"
+            - "H1;trend_macd;histogram < 0"
             - "price.close < price.open" # Additional bearish confirmation
       exits:
         BUY:
           stop_loss:
             method: "ATR"
-            indicator: "H4.trend_atr.value"
-            multiplier: 2.0
+            indicator: "H1;trend_atr;value"
+            multiplier: 1.5
+          take_profit:
+            method: "risk_reward"
+            ratio: 4.0
+        SELL:
+          stop_loss:
+            method: "ATR"
+            indicator: "H1;trend_atr;value"
+            multiplier: 1.5
+          take_profit:
+            method: "risk_reward"
+            ratio: 4.0
+
+    RANGING:
+      entries:
+        BUY:
+          conditions:
+            # Replace vague "near" with specific range check
+            - "price.low >= H1;range_sr;S1 * 0.992" # Within 0.8% below support
+            - "price.low <= H1;range_sr;S1 * 1.008" # Within 0.8% above support
+            - "H1;range_stoch;k < 20"
+            # Replace vague "candlestick is bullish" with specific conditions
+            - "price.close > price.open" # Bullish candle
+            # - "price.close > price.low + ((price.high - price.low) * 0.6)" # Strong close in upper portion
+            - "price.close > price.previous_close" # Higher than previous close
+        SELL:
+          conditions:
+            # Replace vague "near" with specific range check
+            - "price.high <= H1;range_sr;R1 * 1.008" # Within 0.8% above resistance
+            - "price.high >= H1;range_sr;R1 * 0.992" # Within 0.8% below resistance
+            - "H1;range_stoch;k > 80"
+            # Replace vague "candlestick is bearish" with specific conditions
+            - "price.close < price.open" # Bearish candle
+            # - "price.close < price.high - ((price.high - price.low) * 0.6)" # Strong close in lower portion
+            - "price.close < price.previous_close" # Lower than previous close
+      exits:
+        BUY:
+          stop_loss:
+            method: "ATR"
+            indicator: "H1;range_atr;value"
+            multiplier: 1.5
+          # take_profit:
+          #   method: "level"
+          #   target: "resistance"
+          #   level: "H1;range_sr;R1"
           take_profit:
             method: "risk_reward"
             ratio: 2.0
         SELL:
           stop_loss:
             method: "ATR"
-            indicator: "H4.trend_atr.value"
-            multiplier: 2.0
+            indicator: "H1;range_atr;value"
+            multiplier: 1.5
+          # take_profit:
+          #   method: "level"
+          #   target: "support"
+          #   level: "H1;range_sr;S1"
           take_profit:
             method: "risk_reward"
             ratio: 2.0
-
-    # RANGING:
-    #   entries:
-    #     BUY:
-    #       conditions:
-    #         # Replace vague "near" with specific range check
-    #         - "price.low >= H4.range_sr.S1 * 0.9995" # Within 0.05% below support
-    #         - "price.low <= H4.range_sr.S1 * 1.0005" # Within 0.05% above support
-    #         - "H4.range_stoch.k < 20"
-    #         # Replace vague "candlestick is bullish" with specific conditions
-    #         - "price.close > price.open" # Bullish candle
-    #         - "price.close > price.low + ((price.high - price.low) * 0.6)" # Strong close in upper portion
-    #         - "price.close > price.previous_close" # Higher than previous close
-    #     SELL:
-    #       conditions:
-    #         # Replace vague "near" with specific range check
-    #         - "price.high <= H4.range_sr.R1 * 1.0005" # Within 0.05% above resistance
-    #         - "price.high >= H4.range_sr.R1 * 0.9995" # Within 0.05% below resistance
-    #         - "H4.range_stoch.k > 80"
-    #         # Replace vague "candlestick is bearish" with specific conditions
-    #         - "price.close < price.open" # Bearish candle
-    #         - "price.close < price.high - ((price.high - price.low) * 0.6)" # Strong close in lower portion
-    #         - "price.close < price.previous_close" # Lower than previous close
-    #   exits:
-    #     BUY:
-    #       stop_loss:
-    #         method: "ATR"
-    #         indicator: "H4.range_atr"
-    #         multiplier: 1.5
-    #       take_profit:
-    #         method: "level"
-    #         target: "resistance"
-    #         level: "H4.range_sr.R1"
-    #     SELL:
-    #       stop_loss:
-    #         method: "ATR"
-    #         indicator: "H4.range_atr"
-    #         multiplier: 1.5
-    #       take_profit:
-    #         method: "level"
-    #         target: "support"
-    #         level: "H4.range_sr.S1"
-    
-    # NEUTRAL:
-    #   entries:
-    #     BUY:
-    #       conditions:
-    #         - "H1.trend_ema_fast.value > H1.trend_ema_slow.value"
-    #         - "H4.trend_ema_fast.value > H4.trend_ema_slow.value"
-    #         - "H4.range_stoch.k < 20"
-    #     SELL:
-    #       conditions:
-    #         - "H1.trend_ema_fast.value < H1.trend_ema_slow.value"
-    #         - "H4.trend_ema_fast.value < H4.trend_ema_slow.value"
-    #         - "H4.range_stoch.k > 80"
-    #   exits:
-    #     BUY:
-    #       stop_loss:
-    #         method: "ATR"
-    #         indicator: "H4.trend_atr.value"
-    #         multiplier: 1.0
-    #       take_profit:
-    #         method: "risk_reward"
-    #         ratio: 1.5
-    #     SELL:
-    #       stop_loss:
-    #         method: "ATR"
-    #         indicator: "H4.trend_atr.value"
-    #         multiplier: 1.0
-    #       take_profit:
-    #         method: "risk_reward"
-    #         ratio: 1.5
 
   # ----------------------------------------------------------------------------------
   # 4. RISK MANAGEMENT
   # ----------------------------------------------------------------------------------
   risk_management:
     risk_per_trade: 1.0  # Percentage of account equity to risk per trade (0.5-2% recommended)
+    minimum_rrr: 1.5 # Minimum reward-to-risk ratio required to open a trade
     
     # Trade Management
     trade_management:
       max_concurrent_trades: 3  # Maximum number of open trades at any time
-      allow_opposing_trades: true  # Whether to allow both long and short positions simultaneously
+      allow_opposing_trades: false  # Whether to allow both long and short positions simultaneously
     
     # Drawdown Protection
     drawdown_protection:
@@ -221,31 +201,26 @@ strategy:
       monthly_loss_limit:
         enabled: true
         percentage: 20.0  # Stop trading if monthly loss exceeds 20% of account equity
-      max_consecutive_losses: 15  # Pause trading after 15 consecutive losses
+
+      max_consecutive_losses: 100  # Stop trading entirely after 100 consecutive losses
 
     # Time Filters
     time_filters:
       # Avoid trading during low liquidity periods
       sessions:
-        - name: "Asian"
-          enabled: false  # Don't trade during Asian session
+        - name: "Default"
+          enabled: true  # Allow trading during default session
           start_time: "00:00"
-          end_time: "08:00"
-        - name: "London"
-          enabled: true  # Allow trading during London session
-          start_time: "08:00"
-          end_time: "16:00"
-        - name: "New York"
-          enabled: true  # Allow trading during New York session
-          start_time: "13:00"
-          end_time: "21:00"
-      daily_loss_limit:
-        enabled: true
-        percentage: 3.0  # Stop trading if daily loss exceeds 3% of account equity
-      weekly_loss_limit:
-        enabled: true
-        percentage: 5.0  # Stop trading if weekly loss exceeds 5% of account equity
-      monthly_loss_limit:
-        enabled: true
-        percentage: 10.0  # Stop trading if monthly loss exceeds 10% of account equity
-      max_consecutive_losses: 5  # Pause trading after 5 consecutive losses
+          end_time: "23:59"
+        # - name: "Asian"
+        #   enabled: false  # Don't trade during Asian session
+        #   start_time: "00:00"
+        #   end_time: "08:00"
+        # - name: "London"
+        #   enabled: true  # Allow trading during London session
+        #   start_time: "08:00"
+        #   end_time: "16:00"
+        # - name: "New York"
+        #   enabled: true  # Allow trading during New York session
+        #   start_time: "13:00"
+        #   end_time: "21:00"

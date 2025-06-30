@@ -5,6 +5,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 from ta.momentum import StochasticOscillator
 from typing import Dict, List, Any, Optional, Union
 from src.utils.logger import Logger
+from scipy.signal import find_peaks
 
 logger = Logger(__name__)
 
@@ -320,6 +321,45 @@ class IndicatorEngine:
                     "S3": s3,
                 }
 
+            elif indicator_type == "S&R":
+                distance = params.get("distance", 10)
+                prominence = params.get("prominence", 0.025)
+                logger.debug(
+                    f"Calculating S&R with distance={distance}, prominence={prominence}"
+                )
+
+                # Identify resistance levels (peaks in high prices)
+                resistance_indices, _ = find_peaks(
+                    df_lower["high"], distance=distance, prominence=prominence
+                )
+                resistance_prices = df_lower["high"].iloc[resistance_indices]
+
+                # Identify support levels (peaks in inverted low prices, i.e., troughs)
+                support_indices, _ = find_peaks(
+                    -df_lower["low"], distance=distance, prominence=prominence
+                )
+                support_prices = df_lower["low"].iloc[support_indices]
+
+                r1 = resistance_prices.iloc[-1] if len(resistance_prices) > 0 else None
+                r2 = resistance_prices.iloc[-2] if len(resistance_prices) > 1 else None
+                s1 = support_prices.iloc[-1] if len(support_prices) > 0 else None
+                s2 = support_prices.iloc[-2] if len(support_prices) > 1 else None
+
+                logger.debug(
+                    f"Support/Resistance result: R1={r1}, R2={r2}, S1={s1}, S2={s2}"
+                )
+
+                return {
+                    "R1": r1,
+                    "R2": r2,
+                    "S1": s1,
+                    "S2": s2,
+                    "series": {
+                        "resistance": resistance_prices.to_dict(),
+                        "support": support_prices.to_dict(),
+                    },
+                }
+
             else:
                 logger.warning(f"Indicator type '{indicator_type}' not implemented")
                 return None
@@ -388,4 +428,5 @@ class IndicatorEngine:
     #         indicator_data.get(timeframe, {})
     #         .get(indicator_name, {})
     #         .get(property_name, 0.0)
+    #     )
     #     )

@@ -33,6 +33,7 @@ class TradeExecutor:
         # Extract risk management settings
         self.risk_settings = config.get("strategy", {}).get("risk_management", {})
         self.risk_per_trade = self.risk_settings.get("risk_per_trade", 2.0)
+        self.minimum_rrr = self.risk_settings.get("minimum_rrr", 1.5)
         self.max_concurrent_trades = self.risk_settings.get("trade_management", {}).get(
             "max_concurrent_trades", 3
         )
@@ -76,8 +77,14 @@ class TradeExecutor:
         self.performance_initialized = False
 
         # Trading session filters
-        self.time_filters = config.get("strategy", {}).get("risk_management", {}).get("time_filters", {})
-        self.sessions = self.time_filters.get("sessions", []) if self.time_filters else []
+        self.time_filters = (
+            config.get("strategy", {})
+            .get("risk_management", {})
+            .get("time_filters", {})
+        )
+        self.sessions = (
+            self.time_filters.get("sessions", []) if self.time_filters else []
+        )
         self._parsed_sessions = self._parse_sessions(self.sessions)
 
         logger.info(
@@ -157,16 +164,12 @@ class TradeExecutor:
         )
 
         # Check if we can place the trade based on risk management rules
-        can_trade, rejection_reason = self._check_risk_management(signal)
+        can_trade, rejection_reason = await self._check_risk_management(
+            signal, exit_parameters, current_time
+        )
         if not can_trade:
             logger.warning(f"Trade rejected: {rejection_reason}")
             return {"success": False, "message": f"Trade rejected: {rejection_reason}"}
-
-        # Trading session filter
-        dt_to_check = current_time or signal.get("timestamp", datetime.now())
-        if not self._is_within_trading_session(dt_to_check):
-            logger.info("Trade rejected: Outside allowed trading sessions.")
-            return {"success": False, "message": "Trade rejected: Outside trading session"}
 
         # Adjust price for spread if backtesting
         adjusted_price = signal["price"]
@@ -555,16 +558,47 @@ class TradeExecutor:
             "closed_positions": closed_details,
         }
 
-    def _check_risk_management(self, signal: Dict[str, Any]) -> Tuple[bool, str]:
+    async def _check_risk_management(
+        self,
+        signal: Dict[str, Any],
+        exit_parameters: Dict[str, Any],
+        current_time: Optional[datetime] = None,
+    ) -> Tuple[bool, str]:
         """
         Check if a trade should be allowed based on risk management rules.
+        This method may also perform actions like closing opposing trades.
 
         Args:
             signal: Trading signal
+            exit_parameters: Dictionary with stop loss and take profit levels
+            current_time: The current time for session checks
 
         Returns:
             Tuple of (allowed, reason)
         """
+        # --- RRR Check ---
+        sl = exit_parameters.get("stop_loss")
+        tp = exit_parameters.get("take_profit")
+        entry_price = signal["price"]
+
+        if sl is not None and tp is not None:
+            if signal["type"] == "BUY":
+                risk_distance = entry_price - sl
+                reward_distance = tp - entry_price
+            else:  # SELL
+                risk_distance = sl - entry_price
+                reward_distance = entry_price - tp
+
+            if risk_distance > 0:
+                rrr = reward_distance / risk_distance
+                if rrr < self.minimum_rrr:
+                    return (
+                        False,
+                        f"RRR ({rrr:.2f}) is below minimum required ({self.minimum_rrr})",
+                    )
+            else:
+                return False, "Invalid SL/TP levels (non-positive risk distance)"
+
         # Check max concurrent trades
         if not self.is_backtesting:
             # Get current positions count from API in live mode
@@ -574,30 +608,6 @@ class TradeExecutor:
                 return (
                     False,
                     f"Maximum concurrent trades ({self.max_concurrent_trades}) reached",
-                )
-
-        # Check opposing trades
-        if not self.allow_opposing_trades:
-            # Check if we have opposite positions
-            current_bias = None
-
-            if self.is_backtesting:
-                # Determine bias from open positions
-                buy_count = sum(1 for p in self.positions if p["type"] == "BUY")
-                sell_count = sum(1 for p in self.positions if p["type"] == "SELL")
-
-                if buy_count > sell_count:
-                    current_bias = "BUY"
-                elif sell_count > buy_count:
-                    current_bias = "SELL"
-            else:
-                # In live mode, we would get this from the API
-                pass
-
-            if current_bias is not None and current_bias != signal["type"]:
-                return (
-                    False,
-                    f"Opposing trade not allowed. Current bias: {current_bias}",
                 )
 
         # Check daily loss limit
@@ -626,6 +636,30 @@ class TradeExecutor:
                 False,
                 f"Maximum consecutive losses reached: {self.consecutive_losses}",
             )
+
+        # Trading session filter
+        dt_to_check = current_time or signal.get("timestamp", datetime.now())
+        if not self._is_within_trading_session(dt_to_check):
+            return False, "Outside allowed trading sessions"
+
+        # --- Handle opposing trades logic (last check) ---
+        if not self.allow_opposing_trades and self.positions:
+            # Determine current bias from open positions
+            buy_count = sum(1 for p in self.positions if p["type"] == "BUY")
+            sell_count = sum(1 for p in self.positions if p["type"] == "SELL")
+            current_bias = None
+            if buy_count > sell_count:
+                current_bias = "BUY"
+            elif sell_count > buy_count:
+                current_bias = "SELL"
+
+            # If new signal opposes current bias, close all positions first
+            if current_bias and current_bias != signal["type"]:
+                logger.info(
+                    f"Opposing signal '{signal['type']}' received with existing '{current_bias}' bias. "
+                    "Closing all positions as per configuration."
+                )
+                await self.close_all_positions()
 
         # All checks passed
         return True, ""
