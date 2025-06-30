@@ -266,10 +266,21 @@ async def main():
                                 len(df) == data_provider.counts[tf]
                             ), f"Data yielded {tf} data has length {len(df)}, expected {data_provider.counts[tf]}"
 
-                    # Update trade executor with latest data to check SL/TP hits
+                    # Calculate indicators from the current data snapshot
+                    indicators = indicator_engine.calculate_indicators(data_dict)
+
+                    # Detect market regime
+                    current_regime = regime_detector.detect_regime(
+                        indicators, current_symbol
+                    )
+                    logger.debug(
+                        f"Current market regime for {current_symbol}: {current_regime}"
+                    )
+
+                    # Update trade executor with latest data to check SL/TP hits and regime changes
                     current_time = data_dict[primary_timeframe].index[-1]
-                    closed_positions = trade_executor.update(
-                        data_dict, primary_timeframe, current_symbol
+                    closed_positions = await trade_executor.update(
+                        data_dict, primary_timeframe, current_symbol, current_regime
                     )
 
                     # Log closed positions if any
@@ -282,17 +293,6 @@ async def main():
                                 f"  {pos['type']} position closed at {pos['close_price']}. "
                                 f"Reason: {pos['close_reason']}. P&L: {pos['pnl']:.2f}"
                             )
-
-                    # Calculate indicators from the current data snapshot
-                    indicators = indicator_engine.calculate_indicators(data_dict)
-
-                    # Detect market regime
-                    current_regime = regime_detector.detect_regime(
-                        indicators, current_symbol
-                    )
-                    logger.debug(
-                        f"Current market regime for {current_symbol}: {current_regime}"
-                    )
 
                     # Generate trading signals based on the detected regime
                     signals = trading_logic_engine.generate_signals(
@@ -465,9 +465,19 @@ async def main():
                         f"Current market regime (live) for {current_symbol}: {current_regime}"
                     )
 
+                    # Update trade executor to check for regime changes
+                    current_time = data_dict[primary_timeframe].index[-1]
+                    closed_positions = await trade_executor.update(
+                        data_dict, primary_timeframe, current_symbol, current_regime
+                    )
+                    if closed_positions:
+                        logger.info(
+                            f"Closed {len(closed_positions)} positions due to regime change."
+                        )
+
                     # Generate trading signals
                     signals = trading_logic_engine.generate_signals(
-                        current_regime, indicators, data_dict
+                        current_regime, indicators, data_dict, current_symbol
                     )
 
                     # Execute entry signals if any

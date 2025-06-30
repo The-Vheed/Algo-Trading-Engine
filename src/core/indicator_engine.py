@@ -324,21 +324,28 @@ class IndicatorEngine:
             elif indicator_type == "S&R":
                 distance = params.get("distance", 10)
                 prominence = params.get("prominence", 0.025)
+                period = params.get("period", None)
                 logger.debug(
-                    f"Calculating S&R with distance={distance}, prominence={prominence}"
+                    f"Calculating S&R with distance={distance}, prominence={prominence}, period={period}"
                 )
+
+                # Slice the dataframe if a period is specified
+                df_slice = df_lower
+                if period and len(df_lower) > period:
+                    df_slice = df_lower.iloc[-period:]
+                    logger.debug(f"Using last {period} bars for S&R calculation")
 
                 # Identify resistance levels (peaks in high prices)
                 resistance_indices, _ = find_peaks(
-                    df_lower["high"], distance=distance, prominence=prominence
+                    df_slice["high"], distance=distance, prominence=prominence
                 )
-                resistance_prices = df_lower["high"].iloc[resistance_indices]
+                resistance_prices = df_slice["high"].iloc[resistance_indices]
 
                 # Identify support levels (peaks in inverted low prices, i.e., troughs)
                 support_indices, _ = find_peaks(
-                    -df_lower["low"], distance=distance, prominence=prominence
+                    -df_slice["low"], distance=distance, prominence=prominence
                 )
-                support_prices = df_lower["low"].iloc[support_indices]
+                support_prices = df_slice["low"].iloc[support_indices]
 
                 r1 = resistance_prices.iloc[-1] if len(resistance_prices) > 0 else None
                 r2 = resistance_prices.iloc[-2] if len(resistance_prices) > 1 else None

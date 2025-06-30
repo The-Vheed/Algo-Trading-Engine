@@ -40,6 +40,9 @@ class TradeExecutor:
         self.allow_opposing_trades = self.risk_settings.get("trade_management", {}).get(
             "allow_opposing_trades", False
         )
+        self.close_with_regime_change = self.risk_settings.get(
+            "trade_management", {}
+        ).get("close_with_regime_change", False)
 
         # Extract drawdown protection settings
         self.drawdown_protection = self.risk_settings.get("drawdown_protection", {})
@@ -62,6 +65,9 @@ class TradeExecutor:
 
         # Initialize with default values - will be updated with actual data timestamps
         default_date = date(2000, 1, 1)  # Default date that will be replaced
+
+        # Store current regime per symbol to detect changes
+        self.symbol_regimes = {}
 
         # Performance tracking for risk management
         self.performance = {
@@ -285,22 +291,57 @@ class TradeExecutor:
             "trade_id": position["id"],
         }
 
-    def update(
-        self, current_data: Dict[str, pd.DataFrame], timeframe: str, symbol: str
+    async def update(
+        self,
+        current_data: Dict[str, pd.DataFrame],
+        timeframe: str,
+        symbol: str,
+        current_regime: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Update open positions with latest market data (primarily for backtesting).
-        Checks if any SL/TP levels have been hit.
+        Checks if any SL/TP levels have been hit or if a regime change occurred.
 
         Args:
             current_data: Dictionary of DataFrames by timeframe
             timeframe: Primary timeframe to use for checking positions
             symbol: Current trading symbol
+            current_regime: The current market regime for the symbol
 
         Returns:
             List of positions that were closed during this update
         """
-        if not self.is_backtesting and not self.positions:
+        # --- Regime Change Check ---
+        previous_regime = self.symbol_regimes.get(symbol)
+        if (
+            self.close_with_regime_change
+            and current_regime is not None
+            and previous_regime is not None
+            and current_regime != previous_regime
+        ):
+            logger.info(
+                f"Regime change for {symbol} from {previous_regime} to {current_regime}. Closing positions."
+            )
+            closed_positions_result = {}
+            if self.is_backtesting:
+                # Close all positions for the specific symbol
+                closed_positions_result = self._backtest_close_all(
+                    symbol=symbol, reason="regime_change"
+                )
+            else:
+                # For live trading, close all positions (API may not support by symbol)
+                closed_positions_result = await self.close_all_positions()
+
+            # Update the regime *after* closing positions based on the change
+            self.symbol_regimes[symbol] = current_regime
+            return closed_positions_result.get("closed_positions", [])
+
+        # Update the current regime for the symbol if it's new or has not been set
+        if current_regime is not None:
+            self.symbol_regimes[symbol] = current_regime
+
+        # The rest of the update logic is for backtesting only (SL/TP checks)
+        if not self.is_backtesting:
             return []
 
         if timeframe not in current_data:
@@ -471,26 +512,40 @@ class TradeExecutor:
 
             return result
 
-    def _backtest_close_all(self) -> Dict[str, Any]:
+    def _backtest_close_all(
+        self, symbol: Optional[str] = None, reason: str = "manual"
+    ) -> Dict[str, Any]:
         """
         Close all positions in backtesting mode.
+        If a symbol is provided, only closes positions for that symbol.
+
+        Args:
+            symbol: Optional symbol to filter positions to close.
+            reason: The reason for closing the position.
 
         Returns:
             Result with closed positions
         """
-        if not self.positions:
+        positions_to_close = self.positions
+        if symbol:
+            positions_to_close = [p for p in self.positions if p["symbol"] == symbol]
+
+        if not positions_to_close:
             return {
                 "success": True,
-                "message": "No positions to close",
+                "message": f"No positions to close for {'all symbols' if symbol is None else symbol}",
                 "closed_positions": [],
             }
 
         closed_details = []
         total_pnl = 0.0
+        remaining_positions = (
+            [p for p in self.positions if p["symbol"] != symbol] if symbol else []
+        )
 
         # Get current prices (in real implementation, you'd get the latest market data)
         # For simplicity, we'll just use the open prices and apply a small spread
-        for position in self.positions:
+        for position in positions_to_close:
             # In a real implementation, you would get the current market price
             # Here we'll just simulate a small price move from the open price
             if position["type"] == "BUY":
@@ -528,7 +583,7 @@ class TradeExecutor:
             closed_position = position.copy()
             closed_position["close_price"] = close_price
             closed_position["close_time"] = datetime.now()
-            closed_position["close_reason"] = "manual"
+            closed_position["close_reason"] = reason
             closed_position["status"] = "CLOSED"
             closed_position["pnl"] = pnl
             closed_position["exit_pnl"] = pnl  # <--- Set exit_pnl on close
@@ -546,15 +601,16 @@ class TradeExecutor:
         self.current_balance += total_pnl
 
         # Clear positions
-        self.positions = []
+        self.positions = remaining_positions
 
         logger.info(
-            f"Backtest: Closed all positions. Total P&L: {total_pnl:.2f}. New balance: {self.current_balance:.2f}"
+            f"Backtest: Closed {len(closed_details)} positions for {'all symbols' if symbol is None else symbol}. "
+            f"Total P&L: {total_pnl:.2f}. New balance: {self.current_balance:.2f}"
         )
 
         return {
             "success": True,
-            "message": f"Closed {len(closed_details)} positions with total P&L: {total_pnl:.2f}",
+            f"message": f"Closed {len(closed_details)} positions with total P&L: {total_pnl:.2f}",
             "closed_positions": closed_details,
         }
 
