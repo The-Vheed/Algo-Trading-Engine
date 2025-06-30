@@ -31,8 +31,7 @@ backtesting:
 strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
-  symbols: ["Volatility 25 Index"]
-  # symbols: ["EURUSD"]  # <--- Add EURUSD symbol
+  symbols: ["Volatility 25 Index", "EURUSD"]
   timeframes: ["M15", "H1"]
 
   # ----------------------------------------------------------------------------------
@@ -118,7 +117,7 @@ strategy:
           stop_loss:
             method: "ATR"
             indicator: "H1;trend_atr;value"
-            multiplier: 2.0
+            multiplier: 1.5
           take_profit:
             method: "risk_reward"
             ratio: 4.0
@@ -126,7 +125,7 @@ strategy:
           stop_loss:
             method: "ATR"
             indicator: "H1;trend_atr;value"
-            multiplier: 2.0
+            multiplier: 1.5
           take_profit:
             method: "risk_reward"
             ratio: 4.0
@@ -204,7 +203,7 @@ strategy:
         percentage: 10.0  # Stop trading if weekly loss exceeds 10% of account equity
       monthly_loss_limit:
         enabled: true
-        percentage: 15.0  # Stop trading if monthly loss exceeds 15% of account equity
+        percentage: 20.0  # Stop trading if monthly loss exceeds 20% of account equity
 
       max_consecutive_losses: 100  # Stop trading entirely after 100 consecutive losses
 
