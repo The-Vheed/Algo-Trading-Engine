@@ -31,8 +31,8 @@ backtesting:
 strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
-  # symbols: ["Volatility 25 Index"]
-  symbols: ["EURUSD"]  # <--- Add EURUSD symbol
+  symbols: ["Volatility 25 Index"]
+  # symbols: ["EURUSD"]  # <--- Add EURUSD symbol
   timeframes: ["M15", "H1"]
 
   # ----------------------------------------------------------------------------------
