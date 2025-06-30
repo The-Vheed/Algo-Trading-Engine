@@ -20,7 +20,7 @@ backtesting:
   end: "2025-06-28T14:00:00"
   initial_balance: 10000
   commission_per_lot: 0.0
-  spread_pips: 0.0 #1.2
+  spread_pips: 1.2
   output_folder: "backtest_results"      # <--- Add this line
   save_datastore: true                   # <--- Add this line
   save_trade_history: true               # <--- Add this line
@@ -31,8 +31,8 @@ backtesting:
 strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
-  # symbols: ["EURUSD"]
-  symbols: ["Volatility 25 Index"]
+  # symbols: ["Volatility 25 Index"]
+  symbols: ["EURUSD"]  # <--- Add EURUSD symbol
   timeframes: ["M15", "H1"]
 
   # ----------------------------------------------------------------------------------
@@ -67,7 +67,7 @@ strategy:
         params: { period: 14 }
       - name: "range_sr"
         type: "S&R"
-        params: { distance: 10, prominence: 0.025, period: 100 }
+        params: { distance: 10, prominence: 0.025 }
       - name: "range_stoch"
         type: "STOCH"
         params: { k_period: 14, d_period: 3, smoothing: 3 }
@@ -118,7 +118,7 @@ strategy:
           stop_loss:
             method: "ATR"
             indicator: "H1;trend_atr;value"
-            multiplier: 1.5
+            multiplier: 2.0
           take_profit:
             method: "risk_reward"
             ratio: 4.0
@@ -126,7 +126,7 @@ strategy:
           stop_loss:
             method: "ATR"
             indicator: "H1;trend_atr;value"
-            multiplier: 1.5
+            multiplier: 2.0
           take_profit:
             method: "risk_reward"
             ratio: 4.0
@@ -136,8 +136,8 @@ strategy:
         BUY:
           conditions:
             # Replace vague "near" with specific range check
-            - "price.low >= H1;range_sr;S1 * 0.998" # Within 0.2% below support
-            - "price.low <= H1;range_sr;S1 * 1.002" # Within 0.2% above support
+            - "price.low >= H1;range_sr;S1 * 0.992" # Within 0.8% below support
+            - "price.low <= H1;range_sr;S1 * 1.008" # Within 0.8% above support
             - "H1;range_stoch;k < 20"
             # Replace vague "candlestick is bullish" with specific conditions
             # - "price.close > price.open" # Bullish candle
@@ -146,8 +146,8 @@ strategy:
         SELL:
           conditions:
             # Replace vague "near" with specific range check
-            - "price.high <= H1;range_sr;R1 * 1.002" # Within 0.2% above resistance
-            - "price.high >= H1;range_sr;R1 * 0.998" # Within 0.2% below resistance
+            - "price.high <= H1;range_sr;R1 * 1.008" # Within 0.8% above resistance
+            - "price.high >= H1;range_sr;R1 * 0.992" # Within 0.8% below resistance
             - "H1;range_stoch;k > 80"
             # Replace vague "candlestick is bearish" with specific conditions
             # - "price.close < price.open" # Bearish candle
@@ -188,7 +188,7 @@ strategy:
     
     # Trade Management
     trade_management:
-      max_concurrent_trades: 2  # Maximum number of open trades at any time
+      max_concurrent_trades: 3  # Maximum number of open trades at any time
       allow_opposing_trades: false  # Whether to allow both long and short positions simultaneously
 
       # NOTE: This setting is always false out to avoid closing positions on regime change
@@ -204,7 +204,7 @@ strategy:
         percentage: 10.0  # Stop trading if weekly loss exceeds 10% of account equity
       monthly_loss_limit:
         enabled: true
-        percentage: 20.0  # Stop trading if monthly loss exceeds 20% of account equity
+        percentage: 15.0  # Stop trading if monthly loss exceeds 15% of account equity
 
       max_consecutive_losses: 100  # Stop trading entirely after 100 consecutive losses
 
