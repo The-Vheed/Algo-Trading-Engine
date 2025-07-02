@@ -3,10 +3,6 @@ version: "1.0"
 
 live: false
 
-api:
-  key: "XtejxmiwNHZqDFk"
-  app_id: "80720"
-
 # Trading API Configuration
 trading_api:
   type: "mt5_fastapi"  # Options: mt5_fastapi, deriv, etc.
@@ -16,8 +12,8 @@ trading_api:
 
 backtesting:
   data_source: "historical_live"
-  start: "2025-01-28T00:00:00"
-  end: "2025-06-28T14:00:00"
+  start: "2025-01-27T00:00:00"
+  end: "2025-06-26T14:00:00"
   initial_balance: 10000
   commission_per_lot: 0.0
   spread_pips: 1.2
@@ -31,7 +27,7 @@ backtesting:
 strategy:
   name: "Dynamic Regime Strategy"
   description: "A strategy that adapts to market regimes using multiple indicators and timeframes."
-  symbols: ["Volatility 25 Index", "EURUSD"]
+  symbols: ["EURUSD"]
   timeframes: ["M15", "H1"]
 
   # ----------------------------------------------------------------------------------
@@ -105,12 +101,14 @@ strategy:
             - "M15;trend_ema_fast;value > M15;trend_ema_slow;value"
             - "H1;trend_ema_fast;value > H1;trend_ema_slow;value"
             - "H1;trend_macd;histogram > 0"
+            - "H1;trend_macd;cross > 0"
             - "price.close > price.open" # Additional bullish confirmation
         SELL:
           conditions:
             - "M15;trend_ema_fast;value < M15;trend_ema_slow;value"
             - "H1;trend_ema_fast;value < H1;trend_ema_slow;value"
             - "H1;trend_macd;histogram < 0"
+            - "H1;trend_macd;cross > 0"
             - "price.close < price.open" # Additional bearish confirmation
       exits:
         BUY:
@@ -130,53 +128,53 @@ strategy:
             method: "risk_reward"
             ratio: 4.0
 
-    RANGING:
-      entries:
-        BUY:
-          conditions:
-            # Replace vague "near" with specific range check
-            - "price.low >= H1;range_sr;S1 * 0.992" # Within 0.8% below support
-            - "price.low <= H1;range_sr;S1 * 1.008" # Within 0.8% above support
-            - "H1;range_stoch;k < 20"
-            # Replace vague "candlestick is bullish" with specific conditions
-            # - "price.close > price.open" # Bullish candle
-            # - "price.close > price.low + ((price.high - price.low) * 0.6)" # Strong close in upper portion
-            # - "price.close > price.previous_close" # Higher than previous close
-        SELL:
-          conditions:
-            # Replace vague "near" with specific range check
-            - "price.high <= H1;range_sr;R1 * 1.008" # Within 0.8% above resistance
-            - "price.high >= H1;range_sr;R1 * 0.992" # Within 0.8% below resistance
-            - "H1;range_stoch;k > 80"
-            # Replace vague "candlestick is bearish" with specific conditions
-            # - "price.close < price.open" # Bearish candle
-            # - "price.close < price.high - ((price.high - price.low) * 0.6)" # Strong close in lower portion
-            # - "price.close < price.previous_close" # Lower than previous close
-      exits:
-        BUY:
-          stop_loss:
-            method: "ATR"
-            indicator: "H1;range_atr;value"
-            multiplier: 1.5
-          # take_profit:
-          #   method: "level"
-          #   target: "resistance"
-          #   level: "H1;range_sr;R1"
-          take_profit:
-            method: "risk_reward"
-            ratio: 3.0
-        SELL:
-          stop_loss:
-            method: "ATR"
-            indicator: "H1;range_atr;value"
-            multiplier: 1.5
-          # take_profit:
-          #   method: "level"
-          #   target: "support"
-          #   level: "H1;range_sr;S1"
-          take_profit:
-            method: "risk_reward"
-            ratio: 3.0
+    # RANGING:
+    #   entries:
+    #     BUY:
+    #       conditions:
+    #         # Replace vague "near" with specific range check
+    #         - "price.low >= H1;range_sr;S1 * 0.992" # Within 0.8% below support
+    #         - "price.low <= H1;range_sr;S1 * 1.008" # Within 0.8% above support
+    #         - "H1;range_stoch;k < 20"
+    #         # Replace vague "candlestick is bullish" with specific conditions
+    #         # - "price.close > price.open" # Bullish candle
+    #         # - "price.close > price.low + ((price.high - price.low) * 0.6)" # Strong close in upper portion
+    #         # - "price.close > price.previous_close" # Higher than previous close
+    #     SELL:
+    #       conditions:
+    #         # Replace vague "near" with specific range check
+    #         - "price.high <= H1;range_sr;R1 * 1.008" # Within 0.8% above resistance
+    #         - "price.high >= H1;range_sr;R1 * 0.992" # Within 0.8% below resistance
+    #         - "H1;range_stoch;k > 80"
+    #         # Replace vague "candlestick is bearish" with specific conditions
+    #         # - "price.close < price.open" # Bearish candle
+    #         # - "price.close < price.high - ((price.high - price.low) * 0.6)" # Strong close in lower portion
+    #         # - "price.close < price.previous_close" # Lower than previous close
+    #   exits:
+    #     BUY:
+    #       stop_loss:
+    #         method: "ATR"
+    #         indicator: "H1;range_atr;value"
+    #         multiplier: 1.5
+    #       # take_profit:
+    #       #   method: "level"
+    #       #   target: "resistance"
+    #       #   level: "H1;range_sr;R1"
+    #       take_profit:
+    #         method: "risk_reward"
+    #         ratio: 3.0
+    #     SELL:
+    #       stop_loss:
+    #         method: "ATR"
+    #         indicator: "H1;range_atr;value"
+    #         multiplier: 1.5
+    #       # take_profit:
+    #       #   method: "level"
+    #       #   target: "support"
+    #       #   level: "H1;range_sr;S1"
+    #       take_profit:
+    #         method: "risk_reward"
+    #         ratio: 3.0
 
   # ----------------------------------------------------------------------------------
   # 4. RISK MANAGEMENT

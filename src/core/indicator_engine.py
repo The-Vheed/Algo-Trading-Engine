@@ -178,6 +178,21 @@ class IndicatorEngine:
                 signal_line = macd_indicator.macd_signal()
                 histogram = macd_indicator.macd_diff()
 
+                # Check for recent histogram crossover (sign change)
+                recent_cross = 0
+                cross_direction = "none"
+                if len(histogram) >= 2:
+                    current_hist = histogram.iloc[-1]
+                    previous_hist = histogram.iloc[-2]
+                    # Check if signs are different (one positive, one negative)
+                    recent_cross = int((current_hist * previous_hist) < 0)
+                    cross_direction = "bullish" if current_hist > 0 else "bearish"
+
+                    logger.debug(
+                        f"MACD histogram: current={current_hist:.5f}, previous={previous_hist:.5f}, "
+                        f"recent cross: {recent_cross} ({cross_direction if recent_cross else 'none'})"
+                    )
+
                 logger.debug(
                     f"MACD result: macd={macd_line.iloc[-1]:.5f}, signal={signal_line.iloc[-1]:.5f}, histogram={histogram.iloc[-1]:.5f}"
                 )
@@ -186,6 +201,7 @@ class IndicatorEngine:
                     "macd": macd_line.iloc[-1],
                     "signal": signal_line.iloc[-1],
                     "histogram": histogram.iloc[-1],
+                    "cross": recent_cross,
                     "series": {
                         "macd": macd_line.to_dict(),
                         "signal": signal_line.to_dict(),

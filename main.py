@@ -70,7 +70,7 @@ def determine_counts_from_indicators(indicators_config):
         return timeframe_counts
 
     # Multiplier to ensure we have enough historical data for calculations
-    safety_multiplier = 1.1
+    safety_multiplier = 1.25
 
     for timeframe, indicators in indicators_config.items():
         max_period = 0
