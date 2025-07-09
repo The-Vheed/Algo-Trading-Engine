@@ -1,0 +1,10 @@
+MetaTrader5
+pandas
+pandas_ta
+fastapi
+requests
+uvicorn
+python-dotenv
+numpy
+pydantic
+python-multipart
