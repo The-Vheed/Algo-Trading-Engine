@@ -1,0 +1,56 @@
+flowchart TD
+    A[User/Trader]:::user -->|Configures| B(Config File main.yaml):::config
+    B -->|Loads Settings| C[Main Engine :main.py:]:::engine
+    C --> D[Data Provider]:::core
+    C --> E[Indicator Engine]:::strategy
+    C --> F[Regime Detector]:::strategy
+    C --> G[Trading Logic]:::strategy
+    C --> H[Risk Manager]:::core
+    C --> I[Trade Execution]:::core
+    C --> J[Logger]:::core
+    C --> K[Backtesting Engine]:::core
+    C --> L[Trading API Layer]:::api
+    L -->|MT5 FastAPI, Binance, Bybit, etc.| M[External Trading APIs]:::external
+    D -->|Loads| N[Historical/Live Data]:::external
+    E -->|Calculates| O[Indicators :EMA, MACD, ATR, etc.:]:::strategy
+    F -->|Detects| P[Market Regime :Trending, Ranging, Neutral:]:::strategy
+    G -->|Strategy Logic| Q[Entry/Exit Signals]:::strategy
+    H -->|Checks| R[Risk/Drawdown Rules]:::core
+    I -->|Executes| S[Orders/Trades]:::core
+    J -->|Writes| T[Log Files :logs/:]:::external
+    K -->|Saves| U[Backtest Results :backtest_results/:]:::external
+    
+    subgraph Strategy Layer
+        E
+        F
+        G
+    end
+    
+    subgraph Core Engine
+        D
+        H
+        I
+        J
+        K
+    end
+    
+    subgraph External
+        M
+        N
+        T
+        U
+    end
+    
+    %% Optional: Windows Server for MT5
+    L --> V[MT5 Windows Server :mt5_windows_server/:]:::windows
+    V -->|Bridges| M
+
+    %% Style definitions
+    classDef user fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef config fill:#ffe599,stroke:#b8860b,stroke-width:2px;
+    classDef engine fill:#b4c7e7,stroke:#2e75b6,stroke-width:2px;
+    classDef core fill:#d9ead3,stroke:#38761d,stroke-width:2px;
+    classDef strategy fill:#fce5cd,stroke:#e69138,stroke-width:2px;
+    classDef api fill:#c9daf8,stroke:#1155cc,stroke-width:2px;
+    classDef external fill:#f4cccc,stroke:#990000,stroke-width:2px;
+    classDef windows fill:#d9d2e9,stroke:#674ea7,stroke-width:2px;
